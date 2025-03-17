@@ -4972,3 +4972,10 @@ def NoTrivialAutoVarInit: InheritableAttr {
   let Documentation = [NoTrivialAutoVarInitDocs];
   let SimpleHandler = 1;
 }
+
+def HushExport : InheritableAttr {
+  let Spellings = [CXX11<"hush", "export">];
+  let Args = [VariadicExprArgument<"ExportConfig">];
+  let Subjects = SubjectList<[Function, Record, NonBitField, ParmVar]>;
+  let Documentation = [Undocumented];
+}

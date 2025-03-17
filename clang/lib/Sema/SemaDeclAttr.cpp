@@ -6501,6 +6501,77 @@ static void handleVTablePointerAuthentication(Sema &S, Decl *D,
 }
 
 //===----------------------------------------------------------------------===//
+// Hush Engine specific attribute handlers.
+//===----------------------------------------------------------------------===//
+
+static void handleHushExportAttr(Sema &S, Decl *D, const ParsedAttr &AL) {
+  if (const auto *FD = dyn_cast<FunctionDecl>(D)) {
+    if (FD->isInlined()) {
+      S.Diag(AL.getLoc(), diag::warn_attribute_ignored_on_inline) << AL;
+      return;
+    }
+  }
+
+  // HushExport support the following args on functions:
+  // name: "export name"
+  // transform: "param:type" or "param:type,param:type"
+  // ret_transform: "return:type"
+
+  // HushExport support the following args on classes:
+  // name: "export name"
+  // transparent: "true" or "false"
+
+  // For instance, one function could be like this:
+  // [[hush::export(name: "foo", transform: "param:int", ret_transform: "return:int)]]
+  // int foo(int x) { return x; }
+
+  // For a class, it could be like this:
+  // [[hush::export(name: "foo", transparent: "true")]]
+  // class foo { };
+
+  std::vector<Expr *> HushArgs;
+
+  for (unsigned I = 0, E = AL.getNumArgs(); I != E; ++I) {
+    Expr *HushArgExpr = AL.getArgAsExpr(I);
+
+    // Check if the expr is a variable or function of namespace Hush::Export.
+    std::string FullyQualifiedName;
+    if (auto *CE = dyn_cast<CallExpr>(HushArgExpr)) {
+      // Get the function name.
+      auto *FD = CE->getDirectCallee();
+      if (!FD) {
+        exit(1);
+        continue;
+      }
+      // Get fully qualified name and check if it starts with Hush::Export.
+      FullyQualifiedName = FD->getQualifiedNameAsString();
+
+    } else if (auto *DRE = dyn_cast<DeclRefExpr>(HushArgExpr)) {
+      // Get the variable name.
+      auto *VD = dyn_cast<VarDecl>(DRE->getDecl());
+      if (!VD) {
+          exit(1);
+          continue;
+      }
+      // Get fully qualified name and check if it starts with Hush::Export.
+      FullyQualifiedName = VD->getQualifiedNameAsString();
+    }
+
+    if (FullyQualifiedName.find("Hush::Export") != 0) {
+      S.Diag(HushArgExpr->getBeginLoc(), diag::err_hush_export_attr_invalid_parameter)
+          << FullyQualifiedName << HushArgExpr->getSourceRange();
+      continue;
+    }
+
+    HushArgs.push_back(HushArgExpr);
+  }
+
+  // Add the attribute to the declaration.
+  D->addAttr(::new (S.Context) HushExportAttr(S.Context, AL, HushArgs.data(),
+                                              HushArgs.size()));
+}
+
+//===----------------------------------------------------------------------===//
 // Top Level Sema Entry Points
 //===----------------------------------------------------------------------===//
 
@@ -7408,6 +7479,10 @@ ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D, const ParsedAttr &AL,
 
   case ParsedAttr::AT_VTablePointerAuthentication:
     handleVTablePointerAuthentication(S, D, AL);
+    break;
+
+  case ParsedAttr::AT_HushExport:
+    handleHushExportAttr(S, D, AL);
     break;
   }
 }
