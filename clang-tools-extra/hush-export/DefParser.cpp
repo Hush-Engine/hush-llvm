@@ -5,6 +5,7 @@
 #include <clang/AST/ASTContext.h>
 #include <clang/AST/Attr.h>
 #include <clang/AST/DeclCXX.h>
+#include <clang/AST/ODRDiagsEmitter.h>
 #include <clang/Basic/SourceManager.h>
 
 using namespace clang;
@@ -28,27 +29,31 @@ bool isPOD(const clang::RecordDecl *D) {
 }
 
 void processSpecialTypeDecl(
-    std::map<std::string, ExportedClassInfo> &ParsedClasses,
-    const clang::QualType D, llvm::raw_ostream &OutHeaderFile);
+    std::vector<std::shared_ptr<ExportedClass>> &ParsedClasses,
+    std::map<std::string, std::shared_ptr<ExportedClass>> &ParsedClassesMap,
+    const clang::QualType D);
 
 void processHushExportClassDecl(
-    std::map<std::string, ExportedClassInfo> &ParsedClasses,
-    const clang::HushExportAttr *HushExportAttr, const clang::RecordDecl *D,
-    llvm::raw_ostream &OutHeaderFile, llvm::raw_ostream &OutCppFile);
+    std::vector<std::shared_ptr<ExportedClass>> &ParsedClasses,
+    std::map<std::string, std::shared_ptr<ExportedClass>> &ParsedClassesMap,
+    const clang::HushExportAttr *HushExportAttr, const clang::RecordDecl *D);
 
-std::string
-processPointerDecl(std::map<std::string, ExportedClassInfo> &ParsedClasses,
-                   const clang::RecordDecl *D, llvm::raw_ostream &OutHeaderFile,
-                   llvm::raw_ostream &OutCppFile);
+void processHushExportDecl(
+    std::vector<std::shared_ptr<ExportedClass>> &ParsedClasses,
+    std::map<std::string, std::shared_ptr<ExportedClass>> &ParsedClassesMap,
+    const clang::HushExportAttr *HushExportAttr, const clang::RecordDecl *D);
 
-FieldOptions processMemberFieldDecl(const clang::FieldDecl *Field,
-                                    llvm::raw_ostream &OutHeaderFile);
+void processPointerDecl(
+    std::vector<std::shared_ptr<ExportedClass>> &ParsedClasses,
+    std::map<std::string, std::shared_ptr<ExportedClass>> &ParsedClassesMap,
+    ClassMemberVariable &Member, const clang::RecordDecl *D);
 
-void processClassDecl(std::map<std::string, ExportedClassInfo> &ParsedClasses,
-                      const clang::HushExportAttr *HushExportAttr,
-                      const clang::RecordDecl *D,
-                      llvm::raw_ostream &OutHeaderFile,
-                      llvm::raw_ostream &OutCppFile) {
+FieldOptions getMemberFieldOptions(const clang::FieldDecl *Field);
+
+void processClassDecl(
+    std::vector<std::shared_ptr<ExportedClass>> &ParsedClasses,
+    std::map<std::string, std::shared_ptr<ExportedClass>> &ParsedClassesMap,
+    const clang::HushExportAttr *HushExportAttr, const clang::RecordDecl *D) {
 
   if (!D->isCompleteDefinition()) {
     return;
@@ -66,22 +71,21 @@ void processClassDecl(std::map<std::string, ExportedClassInfo> &ParsedClasses,
     return;
   }
 
-  processHushExportClassDecl(ParsedClasses, HushExportAttr, D, OutHeaderFile,
-                             OutCppFile);
+  processHushExportClassDecl(ParsedClasses, ParsedClassesMap, HushExportAttr,
+                             D);
 }
 
 void processSpecialTypeDecl(
-    std::map<std::string, ExportedClassInfo> &ParsedClasses,
-    const clang::QualType D, llvm::raw_ostream &OutHeaderFile) {
+    std::vector<std::shared_ptr<ExportedClass>> &ParsedClasses,
+    std::map<std::string, std::shared_ptr<ExportedClass>> &ParsedClassesMap,
+    const clang::QualType D) {
   // Check if the type is in the glm namespace
   std::string FullTypeName = D.getAsString();
   std::string ExposedTypeName = FullTypeName;
 
-  if (ParsedClasses.find(FullTypeName) != ParsedClasses.end()) {
+  if (ParsedClassesMap.find(FullTypeName) != ParsedClassesMap.end()) {
     return;
   }
-
-  std::string ExportedDecl;
 
   if (ExposedTypeName.find("glm") != std::string::npos) {
     // Okay, we need to export this type as the following:
@@ -91,25 +95,33 @@ void processSpecialTypeDecl(
     // i32Vector3; glm::mat4 -> typedef struct Matrix4 { float m[16]; } Matrix4;
     // glm::mat4x4 -> typedef struct Matrix4 { float m[16]; } Matrix4;
 
+    std::shared_ptr<ExportedClass> ExportedClassPtr =
+        std::make_shared<ExportedClass>();
+
     ExposedTypeName.replace(ExposedTypeName.find("glm::"), 5, "");
 
-    if (auto vecPos = ExposedTypeName.find("vec");
-        vecPos != std::string::npos) {
+    std::size_t TypeTemplateIndex;
+
+    if (auto VecPos = ExposedTypeName.find("vec");
+        VecPos != std::string::npos) {
+      TypeTemplateIndex = 1;
       ExposedTypeName.replace(ExposedTypeName.find("vec"), 3, "Vector");
-    } else if (auto matPos = ExposedTypeName.find("mat");
+    } else if (const auto matPos = ExposedTypeName.find("mat");
                matPos != std::string::npos) {
+      TypeTemplateIndex = 2;
       ExposedTypeName.replace(ExposedTypeName.find("mat"), 3, "Matrix");
     } else if (auto quatPos = ExposedTypeName.find("quat");
                quatPos != std::string::npos) {
+      TypeTemplateIndex = 0;
       ExposedTypeName.replace(ExposedTypeName.find("quat"), 4, "Quaternion");
     } else {
       llvm::errs() << "Could not find the type of the glm type\n";
       // We don't know how to export this type
       return;
     }
-    ExportedDecl = "typedef struct " + ExposedTypeName + " {\n";
-
-    // Get the type of the template
+    ExportedClassPtr->Name = FullTypeName;
+    ExportedClassPtr->ExportedName = ExposedTypeName;
+    ExportedClassPtr->IsHandle = false;
 
     // Get the record declaration
     const clang::RecordDecl *RD = D->getAsRecordDecl();
@@ -123,26 +135,46 @@ void processSpecialTypeDecl(
       return;
     }
 
+    // Get the template type
+    const clang::TemplateSpecializationType *TemplateType =
+        D->getAs<clang::TemplateSpecializationType>();
+
+    std::string TemplateTypeStr;
+    ArrayRef<TemplateArgument> TemplateArgs =
+        TemplateType->template_arguments();
+    std::string FieldTypeStr =
+        TemplateArgs[TypeTemplateIndex].getAsType().getAsString();
+    // for (clang::TemplateArgument TemplateArg :
+    //      TemplateType->template_arguments()) {
+    //   TemplateTypeStr = TemplateArg.getAsType().getAsString();
+    // }
+
+    // If the field is std::uint* or std::int*, we need to remove the std::
+
     for (const auto *Field : RD->fields()) {
       clang::QualType qualifiedType = Field->getType();
 
-      std::string FieldTypeStr = qualifiedType.getAsString();
+      // std::string FieldTypeStr = qualifiedType.getAsString();
 
-      ExportedDecl +=
-          "  " + FieldTypeStr + " " + Field->getName().str() + ";\n";
+      auto MemberVariable = ClassMemberVariable{};
+      MemberVariable.Name = Field->getName().str();
+      MemberVariable.Type = FieldTypeStr;
+      MemberVariable.Alignment =
+          RD->getASTContext().getTypeAlign(qualifiedType);
+      MemberVariable.Size = RD->getASTContext().getTypeSize(qualifiedType);
+
+      ExportedClassPtr->Members.push_back(MemberVariable);
     }
 
-    ExportedClassInfo ExportedInfo = {ExposedTypeName, true};
-    ParsedClasses[FullTypeName] = ExportedInfo;
-
-    OutHeaderFile << ExportedDecl << "} " << ExposedTypeName << ";\n\n";
+    ParsedClassesMap[FullTypeName] = ExportedClassPtr;
+    ParsedClasses.push_back(ExportedClassPtr);
   }
 }
 
 void processHushExportClassDecl(
-    std::map<std::string, ExportedClassInfo> &ParsedClasses,
-    const clang::HushExportAttr *HushExportAttr, const clang::RecordDecl *D,
-    llvm::raw_ostream &OutHeaderFile, llvm::raw_ostream &OutCppFile) {
+    std::vector<std::shared_ptr<ExportedClass>> &ParsedClasses,
+    std::map<std::string, std::shared_ptr<ExportedClass>> &ParsedClassesMap,
+    const clang::HushExportAttr *HushExportAttr, const clang::RecordDecl *D) {
   // First, get the file path
   clang::ASTContext &Context = D->getASTContext();
 
@@ -155,7 +187,7 @@ void processHushExportClassDecl(
   std::replace(ExportedName.begin(), ExportedName.end(), ':', '_');
 
   // Check if the class is already parsed
-  if (ParsedClasses.find(FullyQualifiedName) != ParsedClasses.end()) {
+  if (ParsedClassesMap.find(FullyQualifiedName) != ParsedClassesMap.end()) {
     return;
   }
 
@@ -199,10 +231,13 @@ void processHushExportClassDecl(
   // transparent, we need to parse the fields and export them as well
   if (IsHandle) {
     // It is simple, export as a pointer
-    OutHeaderFile << "typedef struct " << ExportedName << " " << ExportedName
-                  << ";\n\n";
+    auto NewClass = std::make_shared<ExportedClass>();
+    NewClass->Name = FullyQualifiedName;
+    NewClass->ExportedName = ExportedName;
+    NewClass->IsHandle = true;
 
-    ParsedClasses[FullyQualifiedName] = {ExportedName, IsHandle};
+    ParsedClassesMap[FullyQualifiedName] = NewClass;
+    ParsedClasses.push_back(NewClass);
     return;
   }
 
@@ -217,16 +252,14 @@ void processHushExportClassDecl(
     return;
   }
 
-  std::string ExportedDecl = "typedef struct " + ExportedName + " {\n";
+  auto NewClass = std::make_shared<ExportedClass>();
+  NewClass->Name = FullyQualifiedName;
+  NewClass->ExportedName = ExportedName;
 
   // Process each one of the fields
   for (const auto *Field : D->fields()) {
     // Get the field type
     const clang::QualType FieldType = Field->getType();
-
-    if (Field->getName() == "myClass2") {
-      (void)123;
-    }
 
     // Check if the field is private or protected, if it is, issue a warning
     if (Field->getAccess() != clang::AccessSpecifier::AS_public) {
@@ -251,34 +284,42 @@ void processHushExportClassDecl(
     // Check if the name is part of the special namespaces
     for (const auto &Namespace : SpecialNamespaces) {
       if (FieldTypeStr.find(Namespace) != std::string::npos) {
-        processSpecialTypeDecl(ParsedClasses, Field->getType(), OutHeaderFile);
+        processSpecialTypeDecl(ParsedClasses, ParsedClassesMap,
+                               Field->getType());
         break;
       }
     }
 
-    FieldOptions fieldOptions = processMemberFieldDecl(Field, OutHeaderFile);
+    FieldOptions fieldOptions = getMemberFieldOptions(Field);
 
     if (fieldOptions.Ignore) {
-      auto alignment = Context.getTypeAlignInChars(FieldType);
-      auto fieldSize = Context.getTypeSizeInChars(FieldType);
-      ExportedDecl += "\talignas(" + std::to_string(alignment.getQuantity()) +
-                      ") char " + fieldOptions.Name + "[" +
-                      std::to_string(fieldSize.getQuantity()) + "];\n";
-      continue;
+      // Issue an error
+      unsigned int DiagID = Context.getDiagnostics().getCustomDiagID(
+          clang::DiagnosticsEngine::Error,
+          "Field %0 is ignored, this is not supported when generating the "
+          "bindings");
+
+      DiagnosticsEngine &DiagEngine = Context.getDiagnostics();
+      DiagEngine.Report(Field->getLocation(), DiagID) << Field->getName();
+
+      return;
     }
+
+    auto NewField = ClassMemberVariable{};
+    NewField.Name = fieldOptions.Name;
+    NewField.Alignment = Context.getTypeAlign(FieldType);
+    NewField.Size = Context.getTypeSize(FieldType);
 
     // Okay, check if it is a record decl
     if (FieldType->isBuiltinType()) {
-      // Export as-is
-      ExportedDecl +=
-          "\t" + FieldType.getAsString() + " " + fieldOptions.Name + ";\n";
+      NewField.Type = FieldType.getAsString();
     } else if (FieldType->isRecordType()) {
       // Get the field fully qualified name
       std::string FieldQualifiedName = Field->getType().getAsString();
 
       // Okay, we need to check if the field is already parsed
-      auto AlreadyExported = ParsedClasses.find(FieldQualifiedName);
-      if (AlreadyExported == ParsedClasses.end()) {
+      auto AlreadyExported = ParsedClassesMap.find(FieldQualifiedName);
+      if (AlreadyExported == ParsedClassesMap.end()) {
         unsigned int DiagID = Context.getDiagnostics().getCustomDiagID(
             clang::DiagnosticsEngine::Error,
             "Field %0 is of type %1, which is not exported");
@@ -290,79 +331,68 @@ void processHushExportClassDecl(
       }
 
       // Export the field
-      ExportedDecl += "  " + AlreadyExported->second.ExportedName + " " +
-                      fieldOptions.Name + ";\n";
+      NewField.Type = AlreadyExported->second->ExportedName;
+
     } else if (FieldType->isPointerType()) {
-      ExportedDecl +=
-          "\t" + processPointerDecl(
-                     ParsedClasses,
-                     Field->getType()->getPointeeType()->getAsRecordDecl(),
-                     OutHeaderFile, OutCppFile);
+      processPointerDecl(ParsedClasses, ParsedClassesMap, NewField,
+                         Field->getType()->getPointeeType()->getAsRecordDecl());
     }
+
+    NewClass->Members.push_back(NewField);
   }
 
-  ExportedDecl += "} " + ExportedName + ";\n\n";
-
-  ParsedClasses[FullyQualifiedName] = {ExportedName, IsHandle};
-
-  OutHeaderFile << ExportedDecl;
-
-  SourceManager &SM = Context.getSourceManager();
-
-  // For the Cpp file, just #include the header file, relative to the header
-  OutCppFile << "#include \"" << SM.getFilename(D->getLocation()).str() << "\"\n";
+  ParsedClassesMap.insert(std::make_pair(FullyQualifiedName, NewClass));
+  ParsedClasses.push_back(NewClass);
 }
 
-std::string
-processPointerDecl(std::map<std::string, ExportedClassInfo> &ParsedClasses,
-                   const clang::RecordDecl *D, llvm::raw_ostream &OutHeaderFile,
-                   llvm::raw_ostream &OutCppFile) {
+void processPointerDecl(
+    std::vector<std::shared_ptr<ExportedClass>> &ParsedClasses,
+    std::map<std::string, std::shared_ptr<ExportedClass>> &ParsedClassesMap,
+    ClassMemberVariable &Member, const clang::RecordDecl *D) {
   // First, check if the pointer is of a built-in type.
   const clang::QualType RecordType = D->getASTContext().getRecordType(D);
 
   // If the type is a special type or a built-in type, we should export as-is
-  if (SpecialTypes.find(RecordType.getAsString()) != SpecialTypes.end()) {
-    return RecordType.getAsString() + " *" + D->getName().str() + ";\n";
-  }
-  if (RecordType->isBuiltinType()) {
-    return RecordType.getAsString() + " *" + D->getName().str() + ";\n";
+  if (SpecialTypes.find(RecordType.getAsString()) != SpecialTypes.end() ||
+      RecordType->isBuiltinType()) {
+    Member.Type = RecordType.getAsString();
+    Member.IsPointer = true;
   }
 
   // We don't need the class part, we only need the name of it.
   auto FullyQualifiedName = D->getQualifiedNameAsString();
 
   // Okay, we have a class, check if it is already parsed
-  auto AlreadyExported = ParsedClasses.find(FullyQualifiedName);
-  if (AlreadyExported == ParsedClasses.end()) {
+  auto AlreadyExported = ParsedClassesMap.find(FullyQualifiedName);
+  if (AlreadyExported == ParsedClassesMap.end()) {
     // Check if it has a HushExport attribute
     auto *HushExportAttr = D->getAttr<clang::HushExportAttr>();
     if (HushExportAttr == nullptr) {
       // Issue an error
       llvm::errs() << "Error: " << RecordType.getAsString()
                    << " is not exported\n";
-      return "";
+      return;
     }
 
-    processHushExportClassDecl(ParsedClasses, HushExportAttr, D, OutHeaderFile,
-                               OutCppFile);
+    processHushExportClassDecl(ParsedClasses, ParsedClassesMap, HushExportAttr,
+                               D);
 
     // Find it again
-    AlreadyExported = ParsedClasses.find(FullyQualifiedName);
-    if (AlreadyExported == ParsedClasses.end()) {
+    AlreadyExported = ParsedClassesMap.find(FullyQualifiedName);
+    if (AlreadyExported == ParsedClassesMap.end()) {
       // Issue an error
       llvm::errs() << "Error: " << RecordType.getAsString()
                    << " is not exported\n";
-      return "";
+      return;
     }
   }
 
   // Okay, export the pointer
-  return AlreadyExported->second.ExportedName + " *" + D->getName().str() +
-         ";\n";
+  Member.IsPointer = true;
+  Member.Type = AlreadyExported->second->ExportedName;
 }
 
-FieldOptions processMemberFieldDecl(const clang::FieldDecl *Field,
-                                    llvm::raw_ostream &OutHeaderFile) {
+FieldOptions getMemberFieldOptions(const clang::FieldDecl *Field) {
   // We must check if it has a HushExport attribute
   auto *HushExportAttr = Field->getAttr<clang::HushExportAttr>();
   bool Ignore = false;
