@@ -20,6 +20,8 @@ struct InnerTypeInfo {
 struct FunctionParam {
   std::string Name;
   std::string Type;
+  std::string RealType;
+  std::string EnumType;
   InnerTypeInfo InnerType; // Useful for span, string_view.
   bool IsPointer;
   bool IsReference;
@@ -29,6 +31,8 @@ struct FunctionParam {
 struct ReturnTypeInfo {
   std::string Type;
   std::string InnerType; // Useful for span, string_view, vector,
+  bool IsEnum = false;
+  bool IsReference = false;
 };
 
 struct FunctionInfo {
@@ -47,7 +51,7 @@ constexpr std::array SpecialReturnTypes = {
     std::string_view("std::string"), std::string_view("std::string_view")};
 
 void processFunctionDecl(
-    std::map<std::string, std::shared_ptr<ExportedClass>> &ParsedClassesMap,
+    std::map<std::string, ExportedTypeInfo> &ParsedClassesMap,
     std::vector<FunctionInfo> &FunctionInfos,
     const clang::HushExportAttr *HushExportAttr, const clang::FunctionDecl *D);
 

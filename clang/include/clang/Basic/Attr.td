@@ -5007,6 +5007,6 @@ def OpenACCRoutineAnnot : InheritableAttr {
 def HushExport : InheritableAttr {
   let Spellings = [CXX11<"hush", "export">];
   let Args = [VariadicExprArgument<"ExportConfig">];
-  let Subjects = SubjectList<[Function, Record, NonBitField, ParmVar]>;
+  let Subjects = SubjectList<[Function, Record, NonBitField, ParmVar, Enum]>;
   let Documentation = [Undocumented];
 }
