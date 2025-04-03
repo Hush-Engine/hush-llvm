@@ -54,5 +54,10 @@ void processEnumDecl(std::vector<std::shared_ptr<EnumDeclaration>> &ParsedEnum,
                      const clang::HushExportAttr *HushExportAttr,
                      const clang::EnumDecl *D);
 
+void processSpecialTypeDecl(
+    std::vector<std::shared_ptr<ExportedClass>> &ParsedClasses,
+    std::map<std::string, ExportedTypeInfo> &ParsedClassesMap,
+    const clang::QualType D);
+
 
 #endif // DEFPARSER_H

@@ -9,11 +9,10 @@
 #include <clang/ASTMatchers/ASTMatchers.h>
 #include <clang/ExtractAPI/API.h>
 
-#include "DefParser.h"
-#include "FunctionParser.h"
-
 #include "llvm/DebugInfo/CodeView/CodeView.h"
 #include "llvm/Support/BranchProbability.h"
+
+#include "BindingsGenerator.h"
 
 using namespace clang::tooling;
 using namespace llvm;
@@ -39,61 +38,13 @@ struct FunctionPointerInfo {
   std::vector<std::string> Parameters;
 };
 
-class HushBindingMatcher : public MatchFinder::MatchCallback {
-  std::map<std::string, ExportedTypeInfo> ParsedClasses;
-  std::vector<std::shared_ptr<ExportedClass>> ParsedClassesVector;
-  std::vector<std::shared_ptr<EnumDeclaration>> ParsedEnums;
-  std::vector<FunctionInfo> Functions;
-
-public:
-  HushBindingMatcher() {}
-
-  virtual void run(const MatchFinder::MatchResult &Result) {
-    if (const clang::RecordDecl *D =
-            Result.Nodes.getNodeAs<clang::RecordDecl>("hushExportable")) {
-      clang::HushExportAttr *HushExportAttr =
-          D->getAttr<clang::HushExportAttr>();
-      processClassDecl(ParsedClassesVector, ParsedClasses, HushExportAttr, D);
-    }
-
-    // Get HushExport attribute, it should be one child
-    if (const clang::FunctionDecl *FD =
-            Result.Nodes.getNodeAs<clang::FunctionDecl>("hushExportable")) {
-      clang::HushExportAttr *HushExportAttr =
-          FD->getAttr<clang::HushExportAttr>();
-      processFunctionDecl(ParsedClasses, Functions, HushExportAttr, FD);
-    }
-
-    if (const clang::EnumDecl *ED =
-            Result.Nodes.getNodeAs<clang::EnumDecl>("hushExportable")) {
-      clang::HushExportAttr *HushExportAttr =
-          ED->getAttr<clang::HushExportAttr>();
-      processEnumDecl(ParsedEnums, ParsedClasses, HushExportAttr, ED);
-    }
-  }
-
-  std::map<std::string, ExportedTypeInfo> &getParsedClasses() {
-    return ParsedClasses;
-  }
-
-  std::vector<std::shared_ptr<ExportedClass>> &getParsedClassesVector() {
-    return ParsedClassesVector;
-  }
-
-  std::vector<std::shared_ptr<EnumDeclaration>> &getParsedEnums() {
-    return ParsedEnums;
-  }
-
-  std::vector<FunctionInfo> &getFunctions() { return Functions; }
-};
-
 static void processClassHeader(
-    std::string &HeaderFile,
-    std::vector<std::shared_ptr<ExportedClass>> &ParsedClassesVector);
+    std::string &HeaderFile, std::string &CppFile,
+    std::vector<std::shared_ptr<hush::ExportedClass>> &ParsedClassesVector);
 
 static std::vector<FunctionPointerInfo>
 processFunctions(std::string &HeaderFile, std::string &CppFile,
-                 std::vector<FunctionInfo> &FunctionInfo);
+                 std::vector<hush::FunctionInfo> &FunctionInfo);
 
 static void
 createFuncPointerTable(std::string &Header, std::string &CppFile,
@@ -101,7 +52,7 @@ createFuncPointerTable(std::string &Header, std::string &CppFile,
 
 static void
 processParsedEnums(std::string &Header,
-                   std::vector<std::shared_ptr<EnumDeclaration>> &Enums);
+                   std::vector<std::shared_ptr<hush::EnumDeclaration>> &Enums);
 
 int main(int argc, const char **argv) {
   auto ExpectedParser = CommonOptionsParser::create(argc, argv, MyToolCategory);
@@ -130,12 +81,12 @@ int main(int argc, const char **argv) {
                         "// DO NOT EDIT\n\n"
                         "#include \"HushBindings.h\"\n\n";
 
-  HushBindingMatcher Printer;
+  hush::HushBindingMatcher BindingMatcher;
 
   MatchFinder Finder;
-  Finder.addMatcher(HushExportEnumMatcher, &Printer);
-  Finder.addMatcher(HushExportAttrMatcher, &Printer);
-  Finder.addMatcher(HushExportFunctionMatcher, &Printer);
+  Finder.addMatcher(HushExportEnumMatcher, &BindingMatcher);
+  Finder.addMatcher(HushExportAttrMatcher, &BindingMatcher);
+  Finder.addMatcher(HushExportFunctionMatcher, &BindingMatcher);
 
   auto Result = Tool.run(newFrontendActionFactory(&Finder).get());
 
@@ -144,14 +95,14 @@ int main(int argc, const char **argv) {
     return Result;
   }
 
-  processParsedEnums(HeaderFile, Printer.getParsedEnums());
+  processParsedEnums(HeaderFile, BindingMatcher.getParsedEnums());
 
-  auto &ParsedClassesVector = Printer.getParsedClassesVector();
+  auto &ParsedClassesVector = BindingMatcher.getParsedClassesVector();
 
   // We need to process each one of the classes
-  processClassHeader(HeaderFile, ParsedClassesVector);
+  processClassHeader(HeaderFile, CppFile, ParsedClassesVector);
 
-  auto &Functions = Printer.getFunctions();
+  auto &Functions = BindingMatcher.getFunctions();
   auto FuncPointerInfo = processFunctions(HeaderFile, CppFile, Functions);
 
   createFuncPointerTable(HeaderFile, CppFile, FuncPointerInfo);
@@ -168,18 +119,17 @@ int main(int argc, const char **argv) {
 }
 
 static void processClassHeader(
-    std::string &HeaderFile,
-    std::vector<std::shared_ptr<ExportedClass>> &ParsedClassesVector) {
+    std::string &HeaderFile, std::string &CppFile,
+    std::vector<std::shared_ptr<hush::ExportedClass>> &ParsedClassesVector) {
   for (auto &ParsedClass : ParsedClassesVector) {
     if (ParsedClass->IsHandle) {
-      HeaderFile += "typedef struct " + ParsedClass->ExportedName + ";\n\n";
+      HeaderFile += "typedef struct " + ParsedClass->ExportedName + " " +
+                    ParsedClass->ExportedName + ";\n";
     } else {
       // Process the class
       HeaderFile += "typedef struct " + ParsedClass->ExportedName + " {\n";
       for (auto &Member : ParsedClass->Members) {
-        if (Member.IsPointer) {
-          HeaderFile += "\t" + Member.Type + " *" + Member.Name + ";\n";
-        } else if (!Member.IsHidden) {
+        if (!Member.IsHidden) {
           HeaderFile += "\t" + Member.Type + " " + Member.Name + ";\n";
         } else {
           HeaderFile += "\talignas(" + std::to_string(Member.Alignment) +
@@ -189,12 +139,34 @@ static void processClassHeader(
       }
       HeaderFile += "} " + ParsedClass->ExportedName + ";\n\n";
     }
+
+    if (ParsedClass->IsNonPOD) {
+      // Get the type without the namespaces
+      std::string ClassName = ParsedClass->Name;
+      size_t LastColon = ClassName.find_last_of("::");
+      if (LastColon != std::string::npos) {
+        ClassName = ClassName.substr(LastColon + 1);
+      }
+      // We must add a destructor for the class
+      HeaderFile += "void " + ParsedClass->ExportedName + "_destroy(" +
+                    ParsedClass->ExportedName + " **self);\n";
+
+      CppFile += "void " + ParsedClass->ExportedName + "_destroy(" +
+                 ParsedClass->ExportedName + " **self)\n{\n";
+      CppFile += "\t" + ParsedClass->Name + " *selfClass = reinterpret_cast<" +
+                 ParsedClass->Name + " *>(*self);\n";
+      CppFile += "\tif (selfClass != nullptr)\n\t{\n";
+      CppFile += "\t\t selfClass->~" + ClassName + "();\n\t}\n";
+      // Memory is freed by the caller
+      CppFile += "\t*self = nullptr;\n";
+      CppFile += "}\n\n";
+    }
   }
 }
 
 static std::vector<FunctionPointerInfo>
 processFunctions(std::string &HeaderFile, std::string &CppFile,
-                 std::vector<FunctionInfo> &FunctionInfo) {
+                 std::vector<hush::FunctionInfo> &FunctionInfo) {
 
   std::vector<FunctionPointerInfo> FunctionPointers;
 
@@ -258,7 +230,8 @@ processFunctions(std::string &HeaderFile, std::string &CppFile,
                                              InnerType + "*, size_t, void*)");
         FuncPointerInfo.Parameters.push_back("void* retUserData");
 
-        if (Function.Parameters.size() > 0) {
+        if (Function.Parameters.size() > 0 ||
+            Function.ContainingClass.has_value()) {
           FunctionPrototype += ", ";
         }
 
@@ -329,8 +302,8 @@ processFunctions(std::string &HeaderFile, std::string &CppFile,
                            "(" + Param.Name + "Data, " + Param.Name +
                            "Size);\n";
 
-          std::string ConstDef = Param.InnerType.IsConst ? " const " : "";
-          std::string PointerDef = Param.InnerType.IsPointer ? " *" : "";
+          std::string ConstDef = " const ";
+          std::string PointerDef = " *";
 
           std::string InnerType = Param.InnerType.Type;
 
@@ -394,7 +367,8 @@ processFunctions(std::string &HeaderFile, std::string &CppFile,
       }
     }
 
-    if (Function.Parameters.size() == 0) {
+    if (Function.Parameters.size() == 0 &&
+        !Function.ContainingClass.has_value() && !HasCallback) {
       FunctionPrototype += "void";
     }
 
@@ -413,7 +387,18 @@ processFunctions(std::string &HeaderFile, std::string &CppFile,
       FunctionBody += "\treturn static_cast<" + Function.ReturnType.Type +
                       ">(result______);\n";
     } else if (Function.ReturnType.Type != "void") {
-      FunctionBody += "\treturn result______;\n";
+      if (Function.ReturnType.Type.find("*") != std::string::npos) {
+        FunctionBody += "\treturn reinterpret_cast<" +
+                        Function.ReturnType.Type + ">(result______);\n";
+      } else if (Function.ReturnType.IsReference) {
+        FunctionBody += "\treturn *reinterpret_cast<" +
+                        Function.ReturnType.Type + ">(result______);\n";
+      } else {
+        // Not a pointer or reference, just return the result, construct
+        // in-place
+        FunctionBody += "\treturn *reinterpret_cast<" +
+                        Function.ReturnType.Type + "*>(&result______);\n";
+      }
     }
 
     FunctionBody += "}\n\n";
@@ -465,8 +450,9 @@ void createFuncPointerTable(std::string &Header, std::string &CppFile,
   CppFile += TableInit;
 }
 
-void processParsedEnums(std::string &Header,
-                        std::vector<std::shared_ptr<EnumDeclaration>> &Enums) {
+void processParsedEnums(
+    std::string &Header,
+    std::vector<std::shared_ptr<hush::EnumDeclaration>> &Enums) {
   for (auto &Enum : Enums) {
     if (Enum->IsPlainEnum) {
       // Export as an enum

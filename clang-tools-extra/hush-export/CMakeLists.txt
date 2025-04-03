@@ -5,6 +5,7 @@ add_clang_executable(hush-export
         FunctionParser.cpp
         DefParser.cpp
         ParserCommon.cpp
+        BindingsGenerator.cpp
 )
 target_link_libraries(hush-export
         PRIVATE

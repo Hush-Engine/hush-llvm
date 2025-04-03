@@ -28,17 +28,7 @@ bool isPOD(const clang::RecordDecl *D) {
   return RecordType.isPODType(Context);
 }
 
-void processSpecialTypeDecl(
-    std::vector<std::shared_ptr<ExportedClass>> &ParsedClasses,
-    std::map<std::string, ExportedTypeInfo> &ParsedClassesMap,
-    const clang::QualType D);
-
 void processHushExportClassDecl(
-    std::vector<std::shared_ptr<ExportedClass>> &ParsedClasses,
-    std::map<std::string, ExportedTypeInfo> &ParsedClassesMap,
-    const clang::HushExportAttr *HushExportAttr, const clang::RecordDecl *D);
-
-void processHushExportDecl(
     std::vector<std::shared_ptr<ExportedClass>> &ParsedClasses,
     std::map<std::string, ExportedTypeInfo> &ParsedClassesMap,
     const clang::HushExportAttr *HushExportAttr, const clang::RecordDecl *D);
@@ -326,15 +316,15 @@ void processHushExportClassDecl(
   }
 
   // Check if it is a POD type
-  if (!isPOD(D)) {
-    unsigned int DiagID = Context.getDiagnostics().getCustomDiagID(
-        clang::DiagnosticsEngine::Error,
-        "Class %0 is not a POD type, consider exporting it as a handle");
-
-    DiagnosticsEngine &DiagEngine = Context.getDiagnostics();
-    DiagEngine.Report(D->getLocation(), DiagID) << D->getName();
-    return;
-  }
+  // if (!isPOD(D)) {
+  //   unsigned int DiagID = Context.getDiagnostics().getCustomDiagID(
+  //       clang::DiagnosticsEngine::Error,
+  //       "Class %0 is not a POD type, consider exporting it as a handle");
+  //
+  //   DiagnosticsEngine &DiagEngine = Context.getDiagnostics();
+  //   DiagEngine.Report(D->getLocation(), DiagID) << D->getName();
+  //   return;
+  // }
 
   auto NewClass = std::make_shared<ExportedClass>();
   auto ExportedTypeData = ExportedTypeInfo{};
@@ -536,39 +526,4 @@ void processPointerDecl(
   // Okay, export the pointer
   Member.IsPointer = true;
   Member.Type = AlreadyExported->second.ExportedName;
-}
-
-FieldOptions getMemberFieldOptions(const clang::FieldDecl *Field) {
-  // We must check if it has a HushExport attribute
-  auto *HushExportAttr = Field->getAttr<clang::HushExportAttr>();
-  bool Ignore = false;
-  std::string ExportedName = Field->getName().str();
-
-  if (HushExportAttr != nullptr) {
-    for (auto *ArgExpr : HushExportAttr->exportConfig()) {
-      // Check if the argument is a reference to a variable called ignore in
-      // nms Hush::Export
-      clang::DeclRefExpr *ArgRef =
-          dyn_cast<clang::DeclRefExpr>(ArgExpr->IgnoreImplicit());
-
-      if (ArgRef != nullptr) {
-        if (isHushExportIgnore(ArgRef, Field->getASTContext())) {
-          Ignore = true;
-        }
-      }
-
-      // If it is a function call to Hush::Export::name, we should replace the
-      // name of the class with the name of the function
-      clang::CallExpr *ArgCall =
-          dyn_cast<clang::CallExpr>(ArgExpr->IgnoreImplicit());
-      if (ArgCall != nullptr) {
-        if (auto Name = getHushExportName(ArgCall, Field->getASTContext());
-            Name.has_value()) {
-          ExportedName = *Name;
-        }
-      }
-    }
-  }
-
-  return {Ignore, ExportedName};
 }

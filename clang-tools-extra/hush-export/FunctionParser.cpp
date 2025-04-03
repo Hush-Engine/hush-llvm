@@ -79,6 +79,7 @@ bool processPointerParam(
 
   return true;
 }
+
 bool processRecordTypeParam(
     std::map<std::string, ExportedTypeInfo> &ParsedClassesMap,
     const clang::FunctionDecl *D, const clang::ParmVarDecl *Param,
