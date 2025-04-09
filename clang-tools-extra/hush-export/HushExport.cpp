@@ -215,18 +215,9 @@ processFunctions(std::string &HeaderFile, std::string &CppFile,
           InnerType.erase(0, 5);
         }
 
-        // Check if the innertype contains const
-        bool IsConst = InnerType.find("const") != std::string::npos;
-        if (IsConst) {
-          InnerType.erase(0, 6);
-        }
+        FunctionPrototype += "void (*retFunc)(" + InnerType + "* " + ", size_t, void*), void* retUserData";
 
-        std::string ConstDef = IsConst ? "const " : "";
-
-        FunctionPrototype += "void (*retFunc)(const " + InnerType + "* " +
-                             ConstDef + ", size_t, void*), void* retUserData";
-
-        FuncPointerInfo.Parameters.push_back("void (*retFunc)(const " +
+        FuncPointerInfo.Parameters.push_back("void (*retFunc)(" +
                                              InnerType + "*, size_t, void*)");
         FuncPointerInfo.Parameters.push_back("void* retUserData");
 
@@ -239,14 +230,7 @@ processFunctions(std::string &HeaderFile, std::string &CppFile,
       }
     } else {
 
-      bool IsConst =
-          Function.ReturnType.Type.find("const") != std::string::npos;
-
-      if (IsConst) {
-        Function.ReturnType.Type.erase(0, 6);
-      }
-
-      std::string ReturnType = IsConst ? "const " : "";
+      std::string ReturnType;
       ReturnType += Function.ReturnType.Type;
 
       FuncPointerInfo.ReturnType = ReturnType;
@@ -301,10 +285,6 @@ processFunctions(std::string &HeaderFile, std::string &CppFile,
           ArgPreprocess += "\tauto " + Param.Name + "Data__ = " + Param.Type +
                            "(" + Param.Name + "Data, " + Param.Name +
                            "Size);\n";
-
-          std::string ConstDef = " const ";
-          std::string PointerDef = " *";
-
           std::string InnerType = Param.InnerType.Type;
 
           if (Param.Type.find("std::uint") != std::string::npos ||
@@ -312,16 +292,11 @@ processFunctions(std::string &HeaderFile, std::string &CppFile,
             InnerType.erase(0, 5);
           }
 
-          FunctionPrototype += InnerType + " *" + ConstDef + PointerDef +
+          FunctionPrototype += InnerType + " *" +
                                Param.Name + "Data, const size_t " + Param.Name +
                                "Size";
-          if (Param.IsConst) {
-            FunctionPrototype = "const " + FunctionPrototype;
-            FuncPointerInfo.Parameters.push_back("const " + InnerType + "* " +
-                                                 ConstDef);
-          } else {
-            FuncPointerInfo.Parameters.push_back(InnerType + "* " + ConstDef);
-          }
+
+          FuncPointerInfo.Parameters.push_back(InnerType + "* ");
 
           FuncPointerInfo.Parameters.push_back("const size_t " + Param.Name +
                                                "Size");
@@ -329,18 +304,12 @@ processFunctions(std::string &HeaderFile, std::string &CppFile,
           CallString += Param.Name + "Data__";
         }
       } else {
-        std::string ConstDef = Param.IsConst ? "const " : "";
-        std::string PointerDef =
-            Param.IsPointer || Param.IsReference ? " *" : "";
-
         std::string ParamType = Param.Type;
 
         if (Param.Type.find("std::uint") != std::string::npos ||
             Param.Type.find("std::int") != std::string::npos) {
           ParamType.erase(0, 5);
-        }
-
-        ParamType = ConstDef + ParamType + PointerDef;
+        };
 
         FuncPointerInfo.Parameters.push_back(ParamType);
 
@@ -352,10 +321,10 @@ processFunctions(std::string &HeaderFile, std::string &CppFile,
         } else if (Param.IsReference) {
           // We need to cast the pointer to the reference
           CallString +=
-              "*reinterpret_cast<" + Param.RealType + "*>(" + Param.Name + ")";
+              "*reinterpret_cast<" + Param.RealType + ">(" + Param.Name + ")";
         } else if (Param.IsPointer) {
           CallString +=
-              "reinterpret_cast<" + Param.RealType + "*>(" + Param.Name + ")";
+              "reinterpret_cast<" + Param.RealType + ">(" + Param.Name + ")";
         } else {
           CallString += Param.Name;
         }
@@ -381,8 +350,9 @@ processFunctions(std::string &HeaderFile, std::string &CppFile,
     FunctionBody += CallString + ");\n";
 
     if (HasCallback) {
-      FunctionBody += "\tretFunc(result______.data(), result______.size(), "
-                      "retUserData);\n";
+      FunctionBody += "\tretFunc(reinterpret_cast<" +
+                      Function.ReturnType.InnerType + "*>(result______.data()), "
+                      "result______.size(), retUserData);\n";
     } else if (Function.ReturnType.IsEnum) {
       FunctionBody += "\treturn static_cast<" + Function.ReturnType.Type +
                       ">(result______);\n";

@@ -30,22 +30,211 @@ void hush::HushBindingMatcher::run(
           Result.Nodes.getNodeAs<clang::RecordDecl>("hushExportable")) {
     clang::HushExportAttr *HushExportAttr = D->getAttr<clang::HushExportAttr>();
     processClassDecl(HushExportAttr, D);
-  }
+  } else if (const clang::TypedefNameDecl *TD =
+                 Result.Nodes.getNodeAs<clang::TypedefNameDecl>("glmVecDecl")) {
+    const auto Name = TD->getNameAsString();
 
-  // Get HushExport attribute, it should be one child
-  if (const clang::FunctionDecl *FD =
-          Result.Nodes.getNodeAs<clang::FunctionDecl>("hushExportable")) {
+  } else if (const clang::FunctionDecl *FD =
+                 Result.Nodes.getNodeAs<clang::FunctionDecl>(
+                     "hushExportable")) {
     clang::HushExportAttr *HushExportAttr =
         FD->getAttr<clang::HushExportAttr>();
     processFunctionDecl(HushExportAttr, FD);
-  }
-
-  if (const clang::EnumDecl *ED =
-          Result.Nodes.getNodeAs<clang::EnumDecl>("hushExportable")) {
+  } else if (const clang::EnumDecl *ED =
+                 Result.Nodes.getNodeAs<clang::EnumDecl>("hushExportable")) {
     clang::HushExportAttr *HushExportAttr =
         ED->getAttr<clang::HushExportAttr>();
     processEnumDecl(HushExportAttr, ED);
   }
+}
+
+void hush::HushBindingMatcher::addSpecialTypes() {
+  // Special types:
+  // - glm::vec2, glm::vec3, glm::vec4
+  // - glm::dvec2, glm::dvec3, glm::dvec4
+  // - glm::u8vec2, glm::u8vec3, glm::u8vec4
+  // - glm::i8vec2, glm::i8vec3, glm::i8vec4
+  // - glm::u16vec2, glm::u16vec3, glm::u16vec4
+  // - glm::i16vec2, glm::i16vec3, glm::i16vec4
+  // - glm::u32vec2, glm::u32vec3, glm::u32vec4
+  // - glm::i32vec2, glm::i32vec3, glm::i32vec4
+  // - glm::u64vec2, glm::u64vec3, glm::u64vec4
+  // - glm::i64vec2, glm::i64vec3, glm::i64vec4
+  // - glm::mat2, glm::mat3, glm::mat4
+  // - glm::dmat2, glm::dmat3, glm::dmat4
+  // - glm::quat
+
+  // Let's start by adding the special types to the list
+  struct VecDef {
+    std::string_view Name;
+    std::string_view ExportedName;
+    int Size;
+  };
+  constexpr std::array BaseVecDefs{VecDef{"vec2", "Vector2", 2},
+                                   VecDef{"vec3", "Vector3", 3},
+                                   VecDef{"vec4", "Vector4", 4}};
+
+  constexpr std::array Sizes{std::string_view{"8"}, std::string_view{"16"},
+                             std::string_view{"32"}, std::string_view{"64"}};
+
+  constexpr std::array VecFields{std::string_view{"x"}, std::string_view{"y"},
+                                 std::string_view{"z"}, std::string_view{"w"}};
+
+  for (const auto &BaseDef : BaseVecDefs) {
+    ExportedTypeInfo BaseTypeInfo;
+    std::shared_ptr<ExportedClass> NewClass = std::make_shared<ExportedClass>();
+    NewClass->Name = "glm::" + std::string(BaseDef.Name);
+    NewClass->ExportedName = std::string(BaseDef.ExportedName);
+
+    for (size_t I = 0; I < BaseDef.Size; ++I) {
+      auto Field = ClassMemberVariable{};
+      Field.Name = std::string(VecFields[I]);
+      Field.Type = "float";
+      Field.IsHidden = false;
+      Field.Alignment = 8;
+      Field.Size = 8;
+
+      NewClass->Members.push_back(Field);
+    }
+
+    BaseTypeInfo.Name = NewClass->Name;
+    BaseTypeInfo.ExportedName = NewClass->ExportedName;
+    BaseTypeInfo.TypeData = NewClass;
+
+    this->ParsedClasses.insert({BaseTypeInfo.Name, BaseTypeInfo});
+    this->ParsedClassesVector.push_back(NewClass);
+  }
+
+  // Add the double types
+  for (const auto &BaseDef : BaseVecDefs) {
+    ExportedTypeInfo BaseTypeInfo;
+    std::shared_ptr<ExportedClass> NewClass = std::make_shared<ExportedClass>();
+    NewClass->Name = "glm::d" + std::string(BaseDef.Name);
+    NewClass->ExportedName = "D" + std::string(BaseDef.ExportedName);
+
+    for (size_t I = 0; I < BaseDef.Size; ++I) {
+      auto Field = ClassMemberVariable{};
+      Field.Name = std::string(VecFields[I]);
+      Field.Type = "double";
+      Field.IsHidden = false;
+      Field.Alignment = 8;
+      Field.Size = 8;
+
+      NewClass->Members.push_back(Field);
+    }
+
+    BaseTypeInfo.Name = NewClass->Name;
+    BaseTypeInfo.ExportedName = NewClass->ExportedName;
+    BaseTypeInfo.TypeData = NewClass;
+
+    this->ParsedClasses.insert({BaseTypeInfo.Name, BaseTypeInfo});
+    this->ParsedClassesVector.push_back(NewClass);
+  }
+
+  // Add the signed and unsigned types
+  for (const auto &BaseDef : BaseVecDefs) {
+    for (const auto &Size : Sizes) {
+      ExportedTypeInfo UnsignedBaseTypeInfo;
+      ExportedTypeInfo SignedBaseTypeInfo;
+      std::shared_ptr<ExportedClass> NewUnsigned =
+          std::make_shared<ExportedClass>();
+      std::shared_ptr<ExportedClass> NewSigned =
+          std::make_shared<ExportedClass>();
+
+      NewUnsigned->Name = "glm::u" + std::string(Size) + BaseDef.Name.data();
+      NewUnsigned->ExportedName =
+          "U" + std::string(Size) + BaseDef.ExportedName.data();
+
+      NewSigned->Name = "glm::i" + std::string(Size) + BaseDef.Name.data();
+      NewSigned->ExportedName =
+          "I" + std::string(Size) + BaseDef.ExportedName.data();
+
+      for (size_t I = 0; I < BaseDef.Size; ++I) {
+        auto UnsignedField = ClassMemberVariable{};
+        UnsignedField.Name = std::string(VecFields[I]);
+        UnsignedField.Type = "uint" + std::string(Size) + "_t";
+        UnsignedField.IsHidden = false;
+        UnsignedField.Alignment = 8;
+        UnsignedField.Size = 8;
+
+        auto SignedField = ClassMemberVariable{};
+        SignedField.Name = std::string(VecFields[I]);
+        SignedField.Type = "int" + std::string(Size) + "_t";
+        SignedField.IsHidden = false;
+        SignedField.Alignment = 8;
+        SignedField.Size = 8;
+
+        NewUnsigned->Members.push_back(UnsignedField);
+        NewSigned->Members.push_back(SignedField);
+      }
+
+      UnsignedBaseTypeInfo.Name = NewUnsigned->Name;
+      UnsignedBaseTypeInfo.ExportedName = NewUnsigned->ExportedName;
+      UnsignedBaseTypeInfo.TypeData = NewUnsigned;
+      SignedBaseTypeInfo.Name = NewSigned->Name;
+      SignedBaseTypeInfo.ExportedName = NewSigned->ExportedName;
+      SignedBaseTypeInfo.TypeData = NewSigned;
+
+      this->ParsedClasses.insert(
+          {UnsignedBaseTypeInfo.Name, UnsignedBaseTypeInfo});
+      this->ParsedClasses.insert({SignedBaseTypeInfo.Name, SignedBaseTypeInfo});
+      this->ParsedClassesVector.push_back(NewUnsigned);
+      this->ParsedClassesVector.push_back(NewSigned);
+    }
+  }
+
+  // Add the float matrix types
+  for (int i = 2; i <= 4; ++i) {
+    ExportedTypeInfo BaseTypeInfo;
+    std::shared_ptr<ExportedClass> NewClass = std::make_shared<ExportedClass>();
+    NewClass->Name = "glm::mat" + std::to_string(i);
+    NewClass->ExportedName = "Matrix" + std::to_string(i);
+    NewClass->IsHandle = false;
+    NewClass->IsNonPOD = false;
+
+    NewClass->Members.push_back(ClassMemberVariable{
+        "m[" + std::to_string(i) + "]", "float", 0, 0, false});
+
+    this->ParsedClasses.insert({NewClass->Name, BaseTypeInfo});
+    this->ParsedClassesVector.push_back(NewClass);
+  }
+
+  for (int i = 2; i <= 4; ++i) {
+    ExportedTypeInfo BaseTypeInfo;
+    std::shared_ptr<ExportedClass> NewClass = std::make_shared<ExportedClass>();
+    NewClass->Name = "glm::dmat" + std::to_string(i);
+    NewClass->ExportedName = "DMatrix" + std::to_string(i);
+    NewClass->IsHandle = false;
+    NewClass->IsNonPOD = false;
+
+    NewClass->Members.push_back(ClassMemberVariable{
+        "m[" + std::to_string(i) + "]", "double", 0, 0, false});
+
+    this->ParsedClasses.insert({NewClass->Name, BaseTypeInfo});
+    this->ParsedClassesVector.push_back(NewClass);
+  }
+
+  // Add the quaternion types
+  ExportedTypeInfo BaseTypeInfo;
+  std::shared_ptr<ExportedClass> NewClass = std::make_shared<ExportedClass>();
+  NewClass->Name = "glm::quat";
+  NewClass->ExportedName = "Quat";
+  NewClass->IsHandle = false;
+  NewClass->IsNonPOD = false;
+
+  for (const auto &Field : VecFields) {
+    auto ClassField = ClassMemberVariable{};
+    ClassField.Name = std::string(Field);
+    ClassField.Type = "float";
+    ClassField.IsHidden = false;
+    ClassField.Alignment = 4;
+    ClassField.Size = 4;
+
+    NewClass->Members.push_back(ClassField);
+  }
+
+  this->ParsedClasses.insert({NewClass->Name, BaseTypeInfo});
+  this->ParsedClassesVector.push_back(NewClass);
 }
 
 void hush::HushBindingMatcher::processClassDecl(
@@ -144,6 +333,7 @@ void hush::HushBindingMatcher::processFunctionDecl(
   }
 
   auto ReturnType = D->getReturnType();
+
   if (!processFuncReturnType(D, FuncInfo, ReturnType))
     return;
 
@@ -151,7 +341,6 @@ void hush::HushBindingMatcher::processFunctionDecl(
     // If the parameter is a record, we need to check if it is already parsed
     auto FuncParam = FunctionParam{};
     FuncParam.Name = Param->getNameAsString();
-    FuncParam.IsConst = Param->getType().isConstQualified();
     FuncParam.IsPointer = Param->getType()->isPointerType();
     FuncParam.IsReference = Param->getType()->isReferenceType();
 
@@ -166,31 +355,18 @@ void hush::HushBindingMatcher::processFunctionDecl(
            ArgExpr != AttributeArgsEnd; ++ArgExpr) {
         clang::DeclRefExpr *ArgRef =
             llvm::dyn_cast<clang::DeclRefExpr>((*ArgExpr)->IgnoreImplicit());
-
-        if (ArgRef != nullptr) {
-          if (isHushExportIgnore(ArgRef, D->getASTContext())) {
-            // Ignore this parameter.
-            continue;
-          }
-        }
-
-        clang::CallExpr *ArgCall =
-            llvm::dyn_cast<clang::CallExpr>((*ArgExpr)->IgnoreImplicit());
-        if (ArgCall != nullptr) {
-          if (auto Name = getHushExportName(ArgCall, D->getASTContext());
-              Name.has_value()) {
-            FuncParam.Name = *Name;
-          }
-        }
       }
     }
 
     if (Param->getType()->isRecordType()) {
       if (!processRecordTypeParam(D, Param, FuncParam))
         return;
-    } else if (Param->getType()->isPointerType() ||
-               Param->getType()->isReferenceType()) {
+    } else if (Param->getType()->isPointerType()) {
       if (!processPointerParam(D, Param, FuncParam)) {
+        return;
+      }
+    } else if (Param->getType()->isReferenceType()) {
+      if (!processReferenceParam(D, Param, FuncParam)) {
         return;
       }
     } else if (Param->getType()->isBuiltinType()) {
@@ -198,27 +374,32 @@ void hush::HushBindingMatcher::processFunctionDecl(
     } else if (Param->getType()->isEnumeralType()) {
       auto ParamType = Param->getType();
 
-      // Check if ReturnType is a ElaboratedType, if it is, we need to get the
-      // named type, which is the actual enum.
-      if (auto *ElabType = ParamType->getAs<clang::ElaboratedType>()) {
-        ParamType = ElabType->getNamedType();
-      }
+      // Get the enum decl
+      const clang::TagDecl *TagDecl = ParamType->getAsTagDecl();
+      const clang::EnumDecl *EnumDecl =
+          llvm::dyn_cast<clang::EnumDecl>(TagDecl);
 
-      auto FullyQualifiedName = ParamType.getAsString();
-
-      if (FullyQualifiedName.find("enum ") != std::string::npos) {
-        FullyQualifiedName.erase(0, 5);
-      }
+      // Check if the enum is already parsed
+      auto FullyQualifiedName = EnumDecl->getQualifiedNameAsString();
 
       auto AlreadyExported = this->ParsedClasses.find(FullyQualifiedName);
       if (AlreadyExported == this->ParsedClasses.end()) {
-        unsigned DiagID = D->getASTContext().getDiagnostics().getCustomDiagID(
-            clang::DiagnosticsEngine::Error, "Error: %0 is not exported\n");
+        // Check if it has a hush::Export attribute
+        clang::HushExportAttr *EnumHushExportAttr =
+            EnumDecl->getAttr<clang::HushExportAttr>();
+        if (EnumHushExportAttr == nullptr) {
+          // We don't have a HushExport attribute, so we can't export it
+          unsigned DiagID = D->getASTContext().getDiagnostics().getCustomDiagID(
+              clang::DiagnosticsEngine::Error, "Error: %0 is not exported\n");
 
-        clang::DiagnosticsEngine &DiagEngine =
-            D->getASTContext().getDiagnostics();
-        DiagEngine.Report(Param->getLocation(), DiagID) << FullyQualifiedName;
-        return;
+          clang::DiagnosticsEngine &DiagEngine =
+              D->getASTContext().getDiagnostics();
+          DiagEngine.Report(D->getLocation(), DiagID) << FullyQualifiedName;
+          return;
+        }
+
+        this->processEnumDecl(EnumHushExportAttr, EnumDecl);
+        AlreadyExported = this->ParsedClasses.find(FullyQualifiedName);
       }
 
       FuncParam.Type = AlreadyExported->second.ExportedName;
@@ -234,7 +415,76 @@ void hush::HushBindingMatcher::processFunctionDecl(
 }
 
 void hush::HushBindingMatcher::processEnumDecl(
-    const clang::HushExportAttr *HushExportAttr, const clang::EnumDecl *D) {}
+    const clang::HushExportAttr *HushExportAttr, const clang::EnumDecl *D) {
+  // Processing an enum is easy, first, we need to check if the enum has its
+  // type specified, for instance, enum class MyEnum : uint32_t { ... };, if the
+  // type is specified, we should export it as a typedef, otherwise, we should
+  // export it as an enum.
+
+  if (HushExportAttr == nullptr) {
+    return;
+  }
+
+  std::string EnumName = D->getQualifiedNameAsString();
+  std::string ExportedName = EnumName;
+
+  // Replace each :: with _
+  std::replace(ExportedName.begin(), ExportedName.end(), ':', '_');
+
+  // Process the attribute arguments
+  auto *AttributeArgsBegin = HushExportAttr->exportConfig_begin();
+  auto *AttributeArgsEnd = HushExportAttr->exportConfig_end();
+  for (clang::Expr **ArgExpr = AttributeArgsBegin; ArgExpr != AttributeArgsEnd;
+       ++ArgExpr) {
+    clang::DeclRefExpr *ArgRef =
+        llvm::dyn_cast<clang::DeclRefExpr>((*ArgExpr)->IgnoreImplicit());
+
+    if (ArgRef != nullptr) {
+      if (isHushExportIgnore(ArgRef, D->getASTContext())) {
+        // Ignore this class.
+        return;
+      }
+    }
+
+    clang::CallExpr *ArgCall =
+        llvm::dyn_cast<clang::CallExpr>((*ArgExpr)->IgnoreImplicit());
+    if (ArgCall != nullptr) {
+      if (auto Name = getHushExportName(ArgCall, D->getASTContext());
+          Name.has_value()) {
+        ExportedName = *Name;
+      }
+    }
+  }
+
+  auto EnumData = std::make_shared<EnumDeclaration>();
+  auto ExportedTypeData = ExportedTypeInfo{};
+  EnumData->Name = EnumName;
+  EnumData->ExportedName = ExportedName;
+  ExportedTypeData.Name = EnumName;
+  ExportedTypeData.ExportedName = ExportedName;
+  ExportedTypeData.TypeData = EnumData;
+
+  // Check if the enum has a type
+  if (D->getIntegerTypeSourceInfo() == nullptr) {
+    // We don't have a specified type, so we need to export it as an enum
+    EnumData->IsPlainEnum = true;
+  } else {
+    // We have a specified type, so we need to export it as a typedef
+    EnumData->IsPlainEnum = false;
+    EnumData->InnerType = D->getIntegerType().getAsString();
+  }
+
+  // Process the enum values
+  for (const auto *EnumConstant : D->enumerators()) {
+    const std::string Name = EnumConstant->getName().str();
+    const int64_t Value = EnumConstant->getInitVal().getExtValue();
+    EnumData->EnumValues.push_back({Name, Value});
+  }
+
+  // Add the enum to the parsed enums
+  ParsedEnums.push_back(EnumData);
+  ParsedClasses[EnumName] = ExportedTypeData;
+}
 
 void hush::HushBindingMatcher::processSpecialTypeDecl(const clang::QualType D) {
   // Check if the type is in the glm namespace
@@ -264,12 +514,12 @@ void hush::HushBindingMatcher::processSpecialTypeDecl(const clang::QualType D) {
         VecPos != std::string::npos) {
       TypeTemplateIndex = 1;
       ExposedTypeName.replace(ExposedTypeName.find("vec"), 3, "Vector");
-    } else if (const auto matPos = ExposedTypeName.find("mat");
-               matPos != std::string::npos) {
+    } else if (const auto MatPos = ExposedTypeName.find("mat");
+               MatPos != std::string::npos) {
       TypeTemplateIndex = 2;
       ExposedTypeName.replace(ExposedTypeName.find("mat"), 3, "Matrix");
-    } else if (auto quatPos = ExposedTypeName.find("quat");
-               quatPos != std::string::npos) {
+    } else if (auto QuatPos = ExposedTypeName.find("quat");
+               QuatPos != std::string::npos) {
       TypeTemplateIndex = 0;
       ExposedTypeName.replace(ExposedTypeName.find("quat"), 4, "Quaternion");
     } else {
@@ -313,7 +563,7 @@ void hush::HushBindingMatcher::processSpecialTypeDecl(const clang::QualType D) {
     // If the field is std::uint* or std::int*, we need to remove the std::
 
     for (const auto *Field : RD->fields()) {
-      clang::QualType qualifiedType = Field->getType();
+      clang::QualType QualifiedType = Field->getType();
 
       // std::string FieldTypeStr = qualifiedType.getAsString();
 
@@ -321,8 +571,8 @@ void hush::HushBindingMatcher::processSpecialTypeDecl(const clang::QualType D) {
       MemberVariable.Name = Field->getName().str();
       MemberVariable.Type = FieldTypeStr;
       MemberVariable.Alignment =
-          RD->getASTContext().getTypeAlign(qualifiedType);
-      MemberVariable.Size = RD->getASTContext().getTypeSize(qualifiedType);
+          RD->getASTContext().getTypeAlign(QualifiedType);
+      MemberVariable.Size = RD->getASTContext().getTypeSize(QualifiedType);
 
       ExportedClassInfo->Members.push_back(MemberVariable);
     }
@@ -334,127 +584,6 @@ void hush::HushBindingMatcher::processSpecialTypeDecl(const clang::QualType D) {
   }
 }
 
-bool hush::HushBindingMatcher::processPointerDecl(
-    const clang::RecordDecl *D, clang::ASTContext &Context,
-    const clang::FieldDecl *Field, const clang::QualType FieldType,
-    hush::ClassMemberVariable &NewField) {
-  const clang::QualType PointeeType = FieldType->getPointeeType();
-  clang::QualType InnerType = PointeeType;
-  std::string InnerTypeName;
-  std::string PointerFullyQualifiedName =
-      FieldType.getAsString(D->getASTContext().getPrintingPolicy());
-
-  while (InnerType->isPointerType()) {
-    InnerType = InnerType->getPointeeType();
-  }
-
-  // Get the inner type name withou const, volatile, etc.
-  const clang::QualType InnerTypeNoCV =
-      InnerType.getUnqualifiedType();
-  InnerTypeName = InnerTypeNoCV.getAsString(D->getASTContext().getPrintingPolicy());
-
-  if (InnerType->isRecordType()) {
-    // Okay, it is a record, check if it is already parsed
-    std::string FullyQualifiedName =
-        InnerType->getAsRecordDecl()->getQualifiedNameAsString();
-    std::string FieldTypeName = FieldType.getAsString(Context.getLangOpts());
-    auto AlreadyExported = this->ParsedClasses.find(FullyQualifiedName);
-
-    if (AlreadyExported == this->ParsedClasses.end()) {
-      // Check if it is part of the special namespaces
-      for (const auto &Namespace : SpecialNamespaces) {
-        if (FullyQualifiedName.find(Namespace) != std::string::npos) {
-          processSpecialTypeDecl(Field->getType());
-          break;
-        }
-      }
-
-      // Okay, a normal type, check if it has a HushExport attribute
-      auto *HushExportAttr =
-          InnerType->getAsRecordDecl()->getAttr<clang::HushExportAttr>();
-
-      if (HushExportAttr == nullptr) {
-        unsigned int DiagID = Context.getDiagnostics().getCustomDiagID(
-            clang::DiagnosticsEngine::Error,
-            "Field %0 is of type %1, which is not exported");
-
-        clang::DiagnosticsEngine &DiagEngine = Context.getDiagnostics();
-        DiagEngine.Report(Field->getLocation(), DiagID)
-            << Field->getName() << Field->getType();
-        return false;
-      }
-      // Process the class
-      processHushExportClassDecl(HushExportAttr, InnerType->getAsRecordDecl());
-    }
-    // Find it again
-    AlreadyExported = this->ParsedClasses.find(FullyQualifiedName);
-
-    // Get the exported name
-    std::string ExportedPointerInnerName = AlreadyExported->second.ExportedName;
-
-    // Replace the real type with the exported name
-    PointerFullyQualifiedName.replace(
-        PointerFullyQualifiedName.find(InnerTypeName), InnerTypeName.size(),
-        ExportedPointerInnerName);
-
-    NewField.Type = PointerFullyQualifiedName;
-  } else if (InnerType->isBuiltinType()) {
-    // Just export the type by substituting the type
-    std::string FieldTypeStr = InnerType.getAsString(Context.getLangOpts());
-    std::string PointerTypeStr =
-        FieldType->getPointeeType().getAsString(Context.getLangOpts());
-
-    PointerTypeStr.replace(PointerTypeStr.find(FieldTypeStr),
-                           FieldTypeStr.size(), FieldTypeStr);
-
-    NewField.Type = PointerTypeStr;
-  } else {
-    unsigned int DiagID = Context.getDiagnostics().getCustomDiagID(
-        clang::DiagnosticsEngine::Error,
-        "Field %0 is of type %1, which is not exported");
-
-    clang::DiagnosticsEngine &DiagEngine = Context.getDiagnostics();
-    DiagEngine.Report(Field->getLocation(), DiagID)
-        << Field->getName() << Field->getType();
-    return false;
-  }
-
-  return true;
-}
-bool hush::HushBindingMatcher::processFieldEnum(
-    clang::ASTContext &Context, const clang::FieldDecl *Field,
-    const clang::QualType FieldType) {
-  // Get the enum decl
-  const clang::TagDecl *TagDecl = FieldType->getAsTagDecl();
-  const clang::EnumDecl *EnumDecl = llvm::dyn_cast<clang::EnumDecl>(TagDecl);
-
-  if (EnumDecl == nullptr) {
-    unsigned int DiagID = Context.getDiagnostics().getCustomDiagID(
-        clang::DiagnosticsEngine::Error,
-        "Field %0 is of type %1, which is not exported");
-
-    clang::DiagnosticsEngine &DiagEngine = Context.getDiagnostics();
-    DiagEngine.Report(Field->getLocation(), DiagID)
-        << Field->getName() << FieldType.getAsString(Context.getLangOpts());
-    return false;
-  }
-
-  // Get the hush export attribute
-  auto *EnumHushExportAttr = EnumDecl->getAttr<clang::HushExportAttr>();
-  if (EnumHushExportAttr == nullptr) {
-    unsigned int DiagID = Context.getDiagnostics().getCustomDiagID(
-        clang::DiagnosticsEngine::Error,
-        "Field %0 is of type %1, which is not exported");
-
-    clang::DiagnosticsEngine &DiagEngine = Context.getDiagnostics();
-    DiagEngine.Report(Field->getLocation(), DiagID)
-        << Field->getName() << FieldType.getAsString(Context.getLangOpts());
-    return false;
-  }
-
-  processEnumDecl(EnumHushExportAttr, EnumDecl);
-  return true;
-}
 void hush::HushBindingMatcher::processHushExportClassDecl(
     const clang::HushExportAttr *HushExportAttr, const clang::RecordDecl *D) {
   // First, get the file path
@@ -496,16 +625,6 @@ void hush::HushBindingMatcher::processHushExportClassDecl(
           IsHandle = true;
         }
       }
-
-      // If it is a function call to Hush::Export::name, we should replace the
-      // name of the class with the name of the function
-      clang::CallExpr *ArgCall =
-          dyn_cast<clang::CallExpr>((*ArgExpr)->IgnoreImplicit());
-      if (ArgCall != nullptr) {
-        if (auto Name = getHushExportName(ArgCall, Context); Name.has_value()) {
-          ExportedName = *Name;
-        }
-      }
     }
   }
 
@@ -529,17 +648,6 @@ void hush::HushBindingMatcher::processHushExportClassDecl(
 
     return;
   }
-
-  // Check if it is a POD type
-  // if (!isPOD(D)) {
-  //   unsigned int DiagID = Context.getDiagnostics().getCustomDiagID(
-  //       clang::DiagnosticsEngine::Error,
-  //       "Class %0 is not a POD type, consider exporting it as a handle");
-  //
-  //   DiagnosticsEngine &DiagEngine = Context.getDiagnostics();
-  //   DiagEngine.Report(D->getLocation(), DiagID) << D->getName();
-  //   return;
-  // }
 
   auto NewClass = std::make_shared<ExportedClass>();
   auto ExportedTypeData = ExportedTypeInfo{};
@@ -586,9 +694,10 @@ void hush::HushBindingMatcher::processHushExportClassDecl(
     }
 
     // Check if the name is part of the special namespaces
+    bool IsSpecialType = false;
     for (const auto &Namespace : SpecialNamespaces) {
       if (FieldTypeStr.find(Namespace) != std::string::npos) {
-        processSpecialTypeDecl(Field->getType());
+        IsSpecialType = true;
         break;
       }
     }
@@ -613,51 +722,51 @@ void hush::HushBindingMatcher::processHushExportClassDecl(
     NewField.Alignment = Context.getTypeAlign(FieldType);
     NewField.Size = Context.getTypeSize(FieldType);
 
-    // Okay, check if it is a record decl
-    if (FieldType->isBuiltinType()) {
-      NewField.Type = FieldType.getAsString();
-    } else if (FieldType->isRecordType()) {
-      // Get the field fully qualified name
-      std::string FieldQualifiedName = FieldType.getAsString();
+    if (IsSpecialType) {
+      // We already processed this type, find it
+      const auto &AlreadyExported = this->ParsedClasses.find(FieldTypeStr);
 
-      // Get also the record declaration
-      const clang::RecordDecl *RecordDecl = FieldType->getAsRecordDecl();
-
-      if (RecordDecl == nullptr) {
-        unsigned int DiagID = Context.getDiagnostics().getCustomDiagID(
-            clang::DiagnosticsEngine::Error,
-            "Field %0 is of type %1, which is not exported");
-
-        clang::DiagnosticsEngine &DiagEngine = Context.getDiagnostics();
-        DiagEngine.Report(Field->getLocation(), DiagID)
-            << Field->getName() << FieldQualifiedName;
-        return;
-      }
-
-      std::string FieldFullyQualifiedName =
-          RecordDecl->getQualifiedNameAsString();
-
-      // Okay, we need to check if the field is already parsed
-      auto AlreadyExported = this->ParsedClasses.find(FieldFullyQualifiedName);
       if (AlreadyExported == this->ParsedClasses.end()) {
         unsigned int DiagID = Context.getDiagnostics().getCustomDiagID(
             clang::DiagnosticsEngine::Error,
-            "Field %0 is of type %1, which is not exported");
+            "Field %0 is of type %1, which is not a Hush type");
 
         clang::DiagnosticsEngine &DiagEngine = Context.getDiagnostics();
         DiagEngine.Report(Field->getLocation(), DiagID)
-            << Field->getName() << FieldQualifiedName;
+            << Field->getName() << FieldTypeStr;
         return;
       }
 
-      // Export the field
       NewField.Type = AlreadyExported->second.ExportedName;
-    } else if (FieldType->isPointerType()) {
-      if (!processPointerDecl(D, Context, Field, FieldType, NewField))
-        return;
-    } else if (FieldType->isEnumeralType()) {
-      if (!processFieldEnum(Context, Field, FieldType))
-        return;
+    } else {
+
+      // Okay, check if it is a record decl
+      // Get the field fully qualified name
+      std::string FieldFullyQualifiedName =
+          FieldType.getCanonicalType().getAsString(Context.getLangOpts());
+
+      // Replace the field fully qualified by changing the :: to _
+      std::replace(FieldFullyQualifiedName.begin(),
+                   FieldFullyQualifiedName.end(), ':', '_');
+
+      if (!FieldType->isBuiltinType()) {
+        // Get the field type without pointers, const, volatile, etc.
+        const clang::QualType FieldTypeNoCV = FieldType.getUnqualifiedType();
+        std::string FieldTypeName = FieldTypeNoCV.getAsString();
+        if (auto FoundHush = FieldTypeName.find("Hush"); FoundHush == 0) {
+          unsigned int DiagID = Context.getDiagnostics().getCustomDiagID(
+              clang::DiagnosticsEngine::Error,
+              "Field %0 is of type %1, which is not a Hush type");
+
+          clang::DiagnosticsEngine &DiagEngine = Context.getDiagnostics();
+          DiagEngine.Report(Field->getLocation(), DiagID)
+              << Field->getName() << FieldFullyQualifiedName;
+
+          return;
+        }
+      }
+
+      NewField.Type = FieldFullyQualifiedName;
     }
 
     NewClass->Members.push_back(NewField);
@@ -668,145 +777,117 @@ void hush::HushBindingMatcher::processHushExportClassDecl(
   this->ParsedClassesVector.push_back(NewClass);
 }
 
-void hush::HushBindingMatcher::processPointerDecl(ClassMemberVariable &Member,
-                                                  const clang::FieldDecl *D) {
+bool hush::HushBindingMatcher::processPointerRet(
+    const clang::FunctionDecl *FunctionDeclInfo, ReturnTypeInfo &ReturnType) {
 
-  // Get the pointee type
-  const clang::QualType PointeeType = D->getType()->getPointeeType();
+  // Get the return type
+  const clang::QualType ReturnTypeDecl = FunctionDeclInfo->getReturnType();
+  clang::QualType PointeeType = ReturnTypeDecl->getPointeeType();
 
-  if (PointeeType->isBuiltinType()) {
-    Member.Type = PointeeType.getAsString();
-    return;
+  while (PointeeType->isPointerType()) {
+    PointeeType = PointeeType->getPointeeType();
   }
 
-  // Not a built-in type, it must be an enum or a class
-  if (PointeeType->isEnumeralType()) {
-    // Check if we have the enum already parsed
-    auto AlreadyExported = this->ParsedClasses.find(PointeeType.getAsString());
+  // Get the inner type name withou const, volatile, etc.
+  const clang::QualType InnerTypeNoCV = PointeeType.getUnqualifiedType();
+  std::string InnerTypeName = InnerTypeNoCV.getAsString(
+      FunctionDeclInfo->getASTContext().getPrintingPolicy());
+
+  if (PointeeType->isRecordType()) {
+    // Okay, it is a record, check if it is already parsed
+    std::string FullyQualifiedName =
+        PointeeType->getAsRecordDecl()->getQualifiedNameAsString();
+    std::string ReturnTypeName = ReturnTypeDecl.getAsString();
+
+    // Get also the record declaration
+    const clang::RecordDecl *RecordDecl = PointeeType->getAsRecordDecl();
+
+    if (RecordDecl == nullptr) {
+      unsigned int DiagID =
+          FunctionDeclInfo->getASTContext().getDiagnostics().getCustomDiagID(
+              clang::DiagnosticsEngine::Error,
+              "Return type %0 is not exported\n");
+
+      clang::DiagnosticsEngine &DiagEngine =
+          FunctionDeclInfo->getASTContext().getDiagnostics();
+      DiagEngine.Report(FunctionDeclInfo->getLocation(), DiagID)
+          << ReturnTypeName;
+      return false;
+    }
+
+    // Check if it is part of the special namespaces
+    for (const auto &Namespace : SpecialNamespaces) {
+      if (FullyQualifiedName.find(Namespace) != std::string::npos) {
+        processSpecialTypeDecl(PointeeType);
+        break;
+      }
+    }
+
+    // Okay, a normal type, check if it has a HushExport attribute
+    auto AlreadyExported = this->ParsedClasses.find(FullyQualifiedName);
     if (AlreadyExported == this->ParsedClasses.end()) {
-      // Try to parse it
-      unsigned DiagID = D->getASTContext().getDiagnostics().getCustomDiagID(
-          clang::DiagnosticsEngine::Error, "Error: %0 is not exported\n");
+      auto *HushExportAttr = RecordDecl->getAttr<clang::HushExportAttr>();
 
-      clang::DiagnosticsEngine &DiagEngine =
-          D->getASTContext().getDiagnostics();
+      if (HushExportAttr == nullptr) {
+        unsigned DiagID =
+            FunctionDeclInfo->getASTContext().getDiagnostics().getCustomDiagID(
+                clang::DiagnosticsEngine::Error,
+                "Return type %0 is not exported\n");
 
-      DiagEngine.Report(D->getLocation(), DiagID) << PointeeType.getAsString();
-      return;
+        clang::DiagnosticsEngine &DiagEngine =
+            FunctionDeclInfo->getASTContext().getDiagnostics();
+        DiagEngine.Report(FunctionDeclInfo->getLocation(), DiagID)
+            << FullyQualifiedName;
+        return false;
+      }
+
+      processHushExportClassDecl(HushExportAttr, RecordDecl);
     }
-
-    // Export the pointer
-    Member.Type = AlreadyExported->second.ExportedName;
-    return;
-  }
-
-  // It must be a record
-  const clang::RecordDecl *RecordDecl = PointeeType->getAsRecordDecl();
-  if (RecordDecl == nullptr) {
-    unsigned DiagID = D->getASTContext().getDiagnostics().getCustomDiagID(
-        clang::DiagnosticsEngine::Error, "Error: %0 is not exported\n");
-
-    clang::DiagnosticsEngine &DiagEngine = D->getASTContext().getDiagnostics();
-
-    DiagEngine.Report(D->getLocation(), DiagID);
-    return;
-  }
-
-  // First, check if the pointer is of a built-in type.
-  auto FullyQualifiedName = RecordDecl->getQualifiedNameAsString();
-
-  // If the type is a special type or a built-in type, we should export as-is
-  for (const auto &SpecialType : SpecialTypes) {
-    if (FullyQualifiedName.find(SpecialType) != std::string::npos) {
-      Member.Type = FullyQualifiedName;
-      return;
-    }
-  }
-
-  // Okay, we have a class, check if it is already parsed
-  auto AlreadyExported = this->ParsedClasses.find(FullyQualifiedName);
-  if (AlreadyExported == this->ParsedClasses.end()) {
-    // Check if it has a HushExport attribute
-    auto *HushExportAttr = RecordDecl->getAttr<clang::HushExportAttr>();
-    if (HushExportAttr == nullptr) {
-      unsigned DiagID =
-          RecordDecl->getASTContext().getDiagnostics().getCustomDiagID(
-              clang::DiagnosticsEngine::Error, "Error: %0 is not exported\n");
-      clang::DiagnosticsEngine &DiagEngine =
-          RecordDecl->getASTContext().getDiagnostics();
-
-      DiagEngine.Report(RecordDecl->getLocation(), DiagID)
-          << FullyQualifiedName;
-      return;
-    }
-
-    processHushExportClassDecl(HushExportAttr, RecordDecl);
 
     // Find it again
     AlreadyExported = this->ParsedClasses.find(FullyQualifiedName);
     if (AlreadyExported == this->ParsedClasses.end()) {
       unsigned DiagID =
-          RecordDecl->getASTContext().getDiagnostics().getCustomDiagID(
-              clang::DiagnosticsEngine::Error, "Error: %0 is not exported\n");
-
-      clang::DiagnosticsEngine &DiagEngine =
-          RecordDecl->getASTContext().getDiagnostics();
-
-      DiagEngine.Report(RecordDecl->getLocation(), DiagID);
-      return;
-    }
-  }
-
-  // Okay, export the pointer
-  Member.Type = AlreadyExported->second.ExportedName;
-}
-bool hush::HushBindingMatcher::processPointerRet(
-    const clang::FunctionDecl *FunctionDeclInfo, ReturnTypeInfo &ReturnType,
-    const clang::QualType PointeeType) {
-  // Check if the pointee is a record
-  if (PointeeType->isRecordType()) {
-    clang::QualType RecordType = PointeeType;
-    // Check if it as an elaborated type
-    if (auto *ElabType = PointeeType->getAs<clang::ElaboratedType>()) {
-      RecordType = ElabType->getNamedType();
-    }
-
-    auto FullyQualifiedName = RecordType.getAsString();
-
-    // Check if it has struct or class and remove it
-    if (FullyQualifiedName.find("struct ") != std::string::npos) {
-      FullyQualifiedName.erase(0, 7);
-    } else if (FullyQualifiedName.find("class ") != std::string::npos) {
-      FullyQualifiedName.erase(0, 6);
-    }
-
-    // Okay, we have a class, check if it is already parsed
-    auto AlreadyExported = this->ParsedClasses.find(FullyQualifiedName);
-    if (AlreadyExported == this->ParsedClasses.end()) {
-      unsigned DiagID =
           FunctionDeclInfo->getASTContext().getDiagnostics().getCustomDiagID(
-              clang::DiagnosticsEngine::Error, "Error: %0 is not exported\n");
+              clang::DiagnosticsEngine::Error,
+              "Return type %0 is not exported\n");
 
       clang::DiagnosticsEngine &DiagEngine =
           FunctionDeclInfo->getASTContext().getDiagnostics();
+
       DiagEngine.Report(FunctionDeclInfo->getLocation(), DiagID)
           << FullyQualifiedName;
+
       return false;
     }
 
-    // We export it.
-    ReturnType.Type = AlreadyExported->second.ExportedName + "*";
+    // It is already exported.
+    std::string FullReturnTypeName = ReturnTypeDecl.getAsString(
+        FunctionDeclInfo->getASTContext().getLangOpts());
+    std::string FullInnerTypeName = PointeeType.getAsString(
+        FunctionDeclInfo->getASTContext().getLangOpts());
+
+    std::string ReturnTypeStr = FullReturnTypeName;
+    ReturnTypeStr.replace(ReturnTypeStr.find(InnerTypeName),
+                          InnerTypeName.size(),
+                          AlreadyExported->second.ExportedName);
+
+    ReturnType.Type = ReturnTypeStr;
   } else if (PointeeType->isBuiltinType()) {
-    // We don't need to do anything
-    ReturnType.Type = PointeeType.getAsString() + "*";
-  } else if (PointeeType->isEnumeralType()) {
-    ReturnType.Type = PointeeType.getAsString() + "*";
-  } else if (PointeeType->isPointerType()) {
-    unsigned DiagID =
+    // Just export the type by substituting the type
+    std::string ReturnTypeStr = InnerTypeName;
+    std::string PointerTypeStr = ReturnTypeDecl->getPointeeType().getAsString(
+        FunctionDeclInfo->getASTContext().getLangOpts());
+
+    PointerTypeStr.replace(PointerTypeStr.find(InnerTypeName),
+                           InnerTypeName.size(), ReturnTypeStr);
+
+    ReturnType.Type = PointerTypeStr;
+  } else {
+    unsigned int DiagID =
         FunctionDeclInfo->getASTContext().getDiagnostics().getCustomDiagID(
             clang::DiagnosticsEngine::Error,
-            "Error: %0 is a pointer to a pointer, it is currently not "
-            "supported");
+            "Return type %0 is not exported\n");
 
     clang::DiagnosticsEngine &DiagEngine =
         FunctionDeclInfo->getASTContext().getDiagnostics();
@@ -822,104 +903,127 @@ bool hush::HushBindingMatcher::processFuncReturnType(
     const clang::FunctionDecl *D, FunctionInfo &FuncInfo,
     clang::QualType ReturnType) {
   if (ReturnType->isBuiltinType()) {
-    FuncInfo.ReturnType.Type = ReturnType.getAsString();
-  } else if (ReturnType->isRecordType()) {
-    auto FullyQualifiedName = ReturnType.getAsString();
+    FuncInfo.ReturnType.Type = ReturnType.getCanonicalType().getAsString();
+  } else {
+    auto FullyQualifiedName = ReturnType.getCanonicalType().getAsString(
+        D->getASTContext().getPrintingPolicy());
 
     // First, check if it as a special type
     if (FullyQualifiedName.find("std::span") != std::string::npos ||
         FullyQualifiedName.find("std::string_view") != std::string::npos ||
         FullyQualifiedName.find("std::vector") != std::string::npos ||
         FullyQualifiedName.find("std::string") != std::string::npos) {
+      FuncInfo.ReturnType.Type = FullyQualifiedName;
       // Get the inner type
       auto InnerType = ReturnType->getAs<clang::TemplateSpecializationType>()
                            ->template_arguments()
                            .front()
                            .getAsType();
 
-      // If the inner type is a record, we need to check if it is already
-      // parsed
-      if (InnerType->isRecordType()) {
-        auto InnerFullyQualifiedName = InnerType.getAsString();
+      std::string InnerTypeWithQualifiers =
+          InnerType.getCanonicalType().getAsString(
+              D->getASTContext().getPrintingPolicy());
 
-        // Okay, we have a class, check if it is already parsed
-        auto AlreadyExported =
-            this->ParsedClasses.find(InnerFullyQualifiedName);
+      while (InnerType->isPointerType()) {
+        InnerType = InnerType->getPointeeType();
+      }
+
+      auto InnerTypeNoCV = InnerType.getUnqualifiedType();
+
+      auto InnerTypeName =
+          InnerType.getCanonicalType().getAsString(D->getASTContext().getPrintingPolicy());
+
+      auto InnerTypeNoCVName =
+          InnerTypeNoCV.getAsString(D->getASTContext().getPrintingPolicy());
+
+      // Check if the inner type is of a special type
+      bool IsSpecialType = false;
+      for (const auto &Namespace : SpecialNamespaces) {
+        if (InnerTypeNoCVName.find(Namespace) != std::string::npos) {
+          IsSpecialType = true;
+          break;
+        }
+      }
+      if (IsSpecialType) {
+        auto AlreadyExported = this->ParsedClasses.find(InnerTypeNoCVName);
         if (AlreadyExported == this->ParsedClasses.end()) {
+          // We don't have a HushExport attribute, so we can't export it
           unsigned DiagID = D->getASTContext().getDiagnostics().getCustomDiagID(
-              clang::DiagnosticsEngine::Error, "Error: %0 is not exported\n");
+              clang::DiagnosticsEngine::Error,
+              "Return type %0 is not exported\n");
 
           clang::DiagnosticsEngine &DiagEngine =
               D->getASTContext().getDiagnostics();
-          DiagEngine.Report(D->getLocation(), DiagID)
-              << InnerFullyQualifiedName;
+          DiagEngine.Report(D->getLocation(), DiagID) << FullyQualifiedName;
           return false;
         }
 
-        FuncInfo.ReturnType.InnerType = AlreadyExported->second.ExportedName;
+        FuncInfo.ReturnType.InnerType = InnerType.getAsString(
+              D->getASTContext().getPrintingPolicy());
+        // Next, we need to replace the find the InnerTypeNoCV and replace it
+        // with the exported name
+
+
+
+        FuncInfo.ReturnType.InnerType.replace(
+            FuncInfo.ReturnType.InnerType.find(InnerTypeNoCVName),
+            InnerTypeNoCVName.size(),
+            AlreadyExported->second.ExportedName);
+
+        // FuncInfo.ReturnType.InnerType = AlreadyExported->second.ExportedName;
+
       } else {
-        FuncInfo.ReturnType.InnerType = InnerType.getAsString();
+        FuncInfo.ReturnType.InnerType = InnerTypeWithQualifiers;
+        std::replace(FuncInfo.ReturnType.InnerType.begin(),
+                 FuncInfo.ReturnType.InnerType.end(), ':', '_');
       }
-
-      // Remove everything after the first <
-      auto Pos = FullyQualifiedName.find('<');
-      if (Pos != std::string::npos) {
-        FullyQualifiedName.erase(Pos);
-      }
-
-      FuncInfo.ReturnType.Type = FullyQualifiedName;
     } else {
-      // Okay, we have a class, check if it is already parsed
-      auto AlreadyExported = this->ParsedClasses.find(FullyQualifiedName);
-      if (AlreadyExported == this->ParsedClasses.end()) {
-        unsigned DiagID = D->getASTContext().getDiagnostics().getCustomDiagID(
-            clang::DiagnosticsEngine::Error, "Error: %0 is not exported\n");
+      bool IsSpecialType = false;
+      clang::QualType ReturnTypeNoCV = ReturnType;
 
-        clang::DiagnosticsEngine &DiagEngine =
-            D->getASTContext().getDiagnostics();
-        DiagEngine.Report(D->getLocation(), DiagID) << FullyQualifiedName;
-        return false;
+      while (ReturnTypeNoCV->isPointerType()) {
+        ReturnTypeNoCV = ReturnTypeNoCV->getPointeeType();
       }
 
-      // We export it.
-      FuncInfo.ReturnType.Type = AlreadyExported->second.ExportedName;
-    }
-  } else if (ReturnType->isEnumeralType()) {
+      ReturnType = ReturnTypeNoCV.getUnqualifiedType();
+      std::string RetTypeFullInnerName =
+          ReturnType.getAsString(D->getASTContext().getPrintingPolicy());
 
-    // Check if ReturnType is a ElaboratedType, if it is, we need to get the
-    // named type, which is the actual enum.
-    if (auto *ElabType = ReturnType->getAs<clang::ElaboratedType>()) {
-      ReturnType = ElabType->getNamedType();
-    }
+      for (const auto &Namespace : SpecialNamespaces) {
+        if (FullyQualifiedName.find(Namespace) != std::string::npos) {
+          IsSpecialType = true;
+          break;
+        }
+      }
 
-    // Check if it is already parsed
-    auto FullyQualifiedName = ReturnType.getAsString();
+      if (IsSpecialType) {
+        // Okay, we have a class, check if it is already parsed
+        auto AlreadyExported = this->ParsedClasses.find(RetTypeFullInnerName);
+        if (AlreadyExported == this->ParsedClasses.end()) {
+          unsigned DiagID = D->getASTContext().getDiagnostics().getCustomDiagID(
+              clang::DiagnosticsEngine::Error,
+              "Return type %0 is not exported\n");
 
-    if (FullyQualifiedName.find("enum ") != std::string::npos) {
-      FullyQualifiedName.erase(0, 5);
-    }
+          clang::DiagnosticsEngine &DiagEngine =
+              D->getASTContext().getDiagnostics();
+          DiagEngine.Report(D->getLocation(), DiagID) << FullyQualifiedName;
+          return false;
+        }
 
-    auto AlreadyExported = this->ParsedClasses.find(FullyQualifiedName);
-    if (AlreadyExported == this->ParsedClasses.end()) {
-      unsigned DiagID = D->getASTContext().getDiagnostics().getCustomDiagID(
-          clang::DiagnosticsEngine::Error, "Error: %0 is not exported\n");
+        FuncInfo.ReturnType.Type = FullyQualifiedName;
 
-      clang::DiagnosticsEngine &DiagEngine =
-          D->getASTContext().getDiagnostics();
-      DiagEngine.Report(D->getLocation(), DiagID) << FullyQualifiedName;
-      return false;
-    }
+        FuncInfo.ReturnType.Type.replace(
+            FuncInfo.ReturnType.Type.find(RetTypeFullInnerName),
+            RetTypeFullInnerName.size(),
+            AlreadyExported->second.ExportedName);
 
-    // We export it.
-    FuncInfo.ReturnType.Type = AlreadyExported->second.ExportedName;
-    FuncInfo.ReturnType.IsEnum = true;
-  } else if (ReturnType->isPointerType() || ReturnType->isReferenceType()) {
-    auto PointeeType = ReturnType->getPointeeType();
 
-    FuncInfo.ReturnType.IsReference = ReturnType->isReferenceType();
+      } else {
+        FuncInfo.ReturnType.Type = FullyQualifiedName;
 
-    if (!processPointerRet(D, FuncInfo.ReturnType, PointeeType)) {
-      return false;
+        std::replace(FuncInfo.ReturnType.InnerType.begin(),
+                     FuncInfo.ReturnType.InnerType.end(), ':', '_');
+      }
     }
   }
 
@@ -936,27 +1040,49 @@ bool hush::HushBindingMatcher::processRecordTypeParam(
       FullyQualifiedName.find("std::string_view")) {
 
     // Get the inner type
-    auto InnerType = Param->getType()
-                         ->getAs<clang::TemplateSpecializationType>()
-                         ->template_arguments()
-                         .front()
-                         .getAsType();
+    clang::QualType InnerType = Param->getType()
+                                    ->getAs<clang::TemplateSpecializationType>()
+                                    ->template_arguments()
+                                    .front()
+                                    .getAsType();
 
     // If the inner type is a record, we need to check if it is already parsed
     if (InnerType->isRecordType()) {
-      auto InnerFullyQualifiedName = InnerType.getAsString();
+      std::string InnerFullyQualifiedName = InnerType.getAsString();
 
       // Okay, we have a class, check if it is already parsed
       auto AlreadyExported = this->ParsedClasses.find(InnerFullyQualifiedName);
       if (AlreadyExported == this->ParsedClasses.end()) {
-        unsigned DiagID = D->getASTContext().getDiagnostics().getCustomDiagID(
-            clang::DiagnosticsEngine::Error, "Error: %0 is not exported\n");
+        // Get the record declaration
+        const clang::RecordDecl *RD = InnerType->getAsRecordDecl();
 
-        clang::DiagnosticsEngine &DiagEngine =
-            D->getASTContext().getDiagnostics();
-        DiagEngine.Report(Param->getLocation(), DiagID)
-            << InnerFullyQualifiedName;
-        return false;
+        const clang::HushExportAttr *SpecialTypeAttr =
+            RD->getAttr<clang::HushExportAttr>();
+
+        if (SpecialTypeAttr == nullptr) {
+          unsigned DiagID = D->getASTContext().getDiagnostics().getCustomDiagID(
+              clang::DiagnosticsEngine::Error, "Error: %0 is not exported\n");
+
+          clang::DiagnosticsEngine &DiagEngine =
+              D->getASTContext().getDiagnostics();
+          DiagEngine.Report(Param->getLocation(), DiagID)
+              << InnerFullyQualifiedName;
+          return false;
+        }
+
+        processHushExportClassDecl(SpecialTypeAttr, RD);
+        // Find it again
+        AlreadyExported = this->ParsedClasses.find(InnerFullyQualifiedName);
+        if (AlreadyExported == this->ParsedClasses.end()) {
+          unsigned DiagID = D->getASTContext().getDiagnostics().getCustomDiagID(
+              clang::DiagnosticsEngine::Error, "Error: %0 is not exported\n");
+
+          clang::DiagnosticsEngine &DiagEngine =
+              D->getASTContext().getDiagnostics();
+          DiagEngine.Report(Param->getLocation(), DiagID)
+              << InnerFullyQualifiedName;
+          return false;
+        }
       }
 
       FuncParam.InnerType.Type = AlreadyExported->second.ExportedName;
@@ -970,7 +1096,6 @@ bool hush::HushBindingMatcher::processRecordTypeParam(
     // Okay, we have a class, check if it is already parsed
     auto AlreadyExported = this->ParsedClasses.find(FullyQualifiedName);
     if (AlreadyExported == this->ParsedClasses.end()) {
-
       unsigned DiagID = D->getASTContext().getDiagnostics().getCustomDiagID(
           clang::DiagnosticsEngine::Error, "Error: %0 is not exported\n");
 
@@ -991,25 +1116,214 @@ bool hush::HushBindingMatcher::processPointerParam(
     const clang::FunctionDecl *D, const clang::ParmVarDecl *Param,
     FunctionParam &FuncParam) {
   // Check if it is a pointer to a record
-  auto PointeeType = Param->getType()->getPointeeType();
+  clang::QualType PointerType = Param->getType();
 
-  // If the pointee is a record, we need to check if it is already parsed
-  if (PointeeType->isRecordType()) {
-    // Check if it is elaborated
-    if (const auto *Elaborated = PointeeType->getAs<clang::ElaboratedType>();
-        Elaborated != nullptr) {
-      PointeeType = Elaborated->getNamedType();
+  clang::QualType MostInnerType = PointerType;
+  std::string MostInnerFullyQualifiedName;
+
+  std::string MostInnerRecordName;
+
+  while (MostInnerType->isPointerType()) {
+    MostInnerType = MostInnerType->getPointeeType();
+  }
+
+  if (MostInnerType->isRecordType()) {
+    // Get the record declaration
+    const clang::RecordDecl *RD = MostInnerType->getAsRecordDecl();
+
+    // Is it a special type?
+    std::string RecordDeclFullyQualifiedName = RD->getQualifiedNameAsString();
+
+    // Find it again
+    auto AlreadyExported =
+        this->ParsedClasses.find(RecordDeclFullyQualifiedName);
+
+    if (AlreadyExported == this->ParsedClasses.end()) {
+      // Check if it is a special type
+      bool IsSpecialType = false;
+      for (const auto &Namespace : SpecialNamespaces) {
+        if (RecordDeclFullyQualifiedName.find(Namespace) != std::string::npos) {
+          processSpecialTypeDecl(Param->getType());
+          IsSpecialType = true;
+          break;
+        }
+      }
+
+      if (!IsSpecialType) {
+        // Check if it has a HushExport attribute
+        auto *HushExportAttr = RD->getAttr<clang::HushExportAttr>();
+
+        if (HushExportAttr == nullptr) {
+          unsigned DiagID = D->getASTContext().getDiagnostics().getCustomDiagID(
+              clang::DiagnosticsEngine::Error, "Error: %0 is not exported\n");
+
+          clang::DiagnosticsEngine &DiagEngine =
+              D->getASTContext().getDiagnostics();
+          DiagEngine.Report(Param->getLocation(), DiagID)
+              << RecordDeclFullyQualifiedName;
+          return false;
+        }
+
+        // Process the class
+        processHushExportClassDecl(HushExportAttr, RD);
+      }
     }
 
-    auto FullyQualifiedName = PointeeType.getAsString();
+    AlreadyExported = this->ParsedClasses.find(RecordDeclFullyQualifiedName);
 
-    if (FullyQualifiedName.find("struct ") != std::string::npos) {
-      FullyQualifiedName = FullyQualifiedName.substr(7);
-    } else if (FullyQualifiedName.find("class ") != std::string::npos) {
-      FullyQualifiedName = FullyQualifiedName.substr(6);
+    if (AlreadyExported == this->ParsedClasses.end()) {
+      unsigned DiagID = D->getASTContext().getDiagnostics().getCustomDiagID(
+          clang::DiagnosticsEngine::Error, "Error: %0 is not exported\n");
+
+      clang::DiagnosticsEngine &DiagEngine =
+          D->getASTContext().getDiagnostics();
+      DiagEngine.Report(Param->getLocation(), DiagID)
+          << RecordDeclFullyQualifiedName;
+      return false;
     }
 
-    // Okay, we have a class, check if it is already parsed
+    // Get the exported name
+    MostInnerFullyQualifiedName = AlreadyExported->second.ExportedName;
+    MostInnerRecordName = AlreadyExported->second.Name;
+  } else if (MostInnerType->isBuiltinType()) {
+    MostInnerFullyQualifiedName = MostInnerType.getAsString();
+    FuncParam.RealType =
+        PointerType.getAsString(D->getASTContext().getPrintingPolicy());
+  } else if (MostInnerType->isEnumeralType()) {
+    // Get the enum decl
+    const clang::TagDecl *TagDecl = MostInnerType->getAsTagDecl();
+    const clang::EnumDecl *EnumDecl = llvm::dyn_cast<clang::EnumDecl>(TagDecl);
+
+    // Check if it is already parsed
+    auto FullyQualifiedName = EnumDecl->getQualifiedNameAsString();
+
+    std::map<std::string, ExportedTypeInfo>::iterator AlreadyExported =
+        this->ParsedClasses.find(FullyQualifiedName);
+    if (AlreadyExported == this->ParsedClasses.end()) {
+      unsigned DiagID = D->getASTContext().getDiagnostics().getCustomDiagID(
+          clang::DiagnosticsEngine::Error, "Error: %0 is not exported\n");
+
+      clang::DiagnosticsEngine &DiagEngine =
+          D->getASTContext().getDiagnostics();
+      DiagEngine.Report(Param->getLocation(), DiagID) << FullyQualifiedName;
+      return false;
+    }
+
+    MostInnerFullyQualifiedName = AlreadyExported->second.ExportedName;
+    MostInnerRecordName = AlreadyExported->second.Name;
+  }
+
+  // Okay, now we need to replace the type with the exported name
+  std::string NameToExport =
+      PointerType.getAsString(D->getASTContext().getLangOpts());
+  // MostInnerType is the type without the const, volatile, etc.
+  clang::QualType MostInnerTypeNoCV = MostInnerType.getUnqualifiedType();
+  std::string MostInnerTypeName =
+      MostInnerTypeNoCV.getAsString(D->getASTContext().getPrintingPolicy());
+
+  std::string RealType =
+      PointerType.getAsString(D->getASTContext().getPrintingPolicy());
+
+  NameToExport.replace(NameToExport.find(MostInnerTypeName),
+                       MostInnerTypeName.size(), MostInnerFullyQualifiedName);
+
+  if (!MostInnerRecordName.empty()) {
+    RealType.replace(RealType.find(MostInnerTypeName), MostInnerTypeName.size(),
+                     MostInnerRecordName);
+  }
+
+  FuncParam.Type = NameToExport;
+  FuncParam.Name = Param->getName();
+  FuncParam.IsPointer = true;
+  FuncParam.RealType = RealType;
+
+  return true;
+}
+bool hush::HushBindingMatcher::processReferenceParam(
+    const clang::FunctionDecl *D, const clang::ParmVarDecl *Param,
+    FunctionParam &FunctionParam) {
+
+  // Check if it is a reference to a record
+  clang::QualType ReferenceType = Param->getType();
+
+  // Check the reference type (lvalue or rvalue)
+  if (!ReferenceType->isLValueReferenceType()) {
+    // We only support lvalue references
+    unsigned DiagID = D->getASTContext().getDiagnostics().getCustomDiagID(
+        clang::DiagnosticsEngine::Error,
+        "Error: %0 is a reference to a rvalue, it is currently not "
+        "supported");
+
+    clang::DiagnosticsEngine &DiagEngine = D->getASTContext().getDiagnostics();
+    DiagEngine.Report(Param->getLocation(), DiagID)
+        << ReferenceType.getAsString();
+
+    return false;
+  }
+
+  std::string FullTypeName =
+      ReferenceType.getAsString(D->getASTContext().getLangOpts());
+
+  // Okay, check the inner type
+  clang::QualType InnerType = ReferenceType->getPointeeType();
+  std::string InnerTypeName =
+      InnerType.getAsString(D->getASTContext().getLangOpts());
+
+  FunctionParam.Name = Param->getName();
+
+  if (InnerType->isBuiltinType()) {
+    FunctionParam.Type = InnerTypeName;
+    FunctionParam.Type.replace(FunctionParam.Type.find("&"), 1, "*");
+    FunctionParam.RealType = InnerTypeName;
+    FunctionParam.RealType.replace(FunctionParam.RealType.find("&"), 1, "*");
+  } else if (InnerType->isEnumeralType()) {
+    // Process the enum
+    const clang::TagDecl *TagDecl = InnerType->getAsTagDecl();
+    const clang::EnumDecl *EnumDecl = llvm::dyn_cast<clang::EnumDecl>(TagDecl);
+
+    // Check if it is already parsed
+    auto FullyQualifiedName = EnumDecl->getQualifiedNameAsString();
+
+    const auto AlreadyExported = this->ParsedClasses.find(FullyQualifiedName);
+
+    if (AlreadyExported == this->ParsedClasses.end()) {
+      unsigned DiagID = D->getASTContext().getDiagnostics().getCustomDiagID(
+          clang::DiagnosticsEngine::Error, "Error: %0 is not exported\n");
+
+      clang::DiagnosticsEngine &DiagEngine =
+          D->getASTContext().getDiagnostics();
+      DiagEngine.Report(Param->getLocation(), DiagID) << FullyQualifiedName;
+      return false;
+    }
+
+    // We export it.
+    std::string UnqualifiedTypeName =
+        InnerType.getUnqualifiedType().getAsString(
+            D->getASTContext().getLangOpts());
+    std::string FullUnqualifiedTypeName =
+        ReferenceType.getUnqualifiedType().getAsString(
+            D->getASTContext().getLangOpts());
+
+    std::string ExportType = FullTypeName;
+    ExportType.replace(ExportType.find(UnqualifiedTypeName),
+                       UnqualifiedTypeName.size(),
+                       AlreadyExported->second.ExportedName);
+
+    std::string RealType = FullTypeName;
+    RealType.replace(RealType.find(UnqualifiedTypeName),
+                     UnqualifiedTypeName.size(), AlreadyExported->second.Name);
+
+    FunctionParam.Type = ExportType;
+    FunctionParam.Type.replace(FunctionParam.Type.find("&"), 1, "*");
+    FunctionParam.RealType = RealType;
+    FunctionParam.RealType.replace(FunctionParam.RealType.find("&"), 1, "*");
+  } else if (InnerType->isRecordType()) {
+    // Get the record declaration
+    const clang::RecordDecl *RD = InnerType->getAsRecordDecl();
+
+    // Check if it is already parsed
+    auto FullyQualifiedName = RD->getQualifiedNameAsString();
+
     auto AlreadyExported = this->ParsedClasses.find(FullyQualifiedName);
     if (AlreadyExported == this->ParsedClasses.end()) {
       unsigned DiagID = D->getASTContext().getDiagnostics().getCustomDiagID(
@@ -1021,59 +1335,41 @@ bool hush::HushBindingMatcher::processPointerParam(
       return false;
     }
 
-    FuncParam.Type = AlreadyExported->second.ExportedName;
-    FuncParam.RealType = AlreadyExported->second.Name;
-  } else if (PointeeType->isBuiltinType()) {
-    FuncParam.Type = PointeeType.getAsString();
+    // We export it.
+    std::string UnqualifiedTypeName =
+        InnerType.getUnqualifiedType().getAsString(
+            D->getASTContext().getLangOpts());
+    std::string FullUnqualifiedTypeName =
+        ReferenceType.getUnqualifiedType().getAsString(
+            D->getASTContext().getLangOpts());
+
+    std::string ExportType = FullTypeName;
+    ExportType.replace(ExportType.find(UnqualifiedTypeName),
+                       UnqualifiedTypeName.size(),
+                       AlreadyExported->second.ExportedName);
+
+    std::string RealType = FullTypeName;
+    RealType.replace(RealType.find(UnqualifiedTypeName),
+                     UnqualifiedTypeName.size(), AlreadyExported->second.Name);
+
+    FunctionParam.Type = ExportType;
+    FunctionParam.Type.replace(FunctionParam.Type.find("&"), 1, "*");
+    FunctionParam.RealType = RealType;
+    FunctionParam.RealType.replace(FunctionParam.RealType.find("&"), 1, "*");
+  } else {
+    unsigned DiagID = D->getASTContext().getDiagnostics().getCustomDiagID(
+        clang::DiagnosticsEngine::Error,
+        "Error: %0 is a reference to a pointer, it is currently not "
+        "supported");
+
+    clang::DiagnosticsEngine &DiagEngine = D->getASTContext().getDiagnostics();
+    DiagEngine.Report(Param->getLocation(), DiagID)
+        << ReferenceType.getAsString();
+
+    return false;
   }
 
   return true;
-}
-std::optional<std::string> hush::HushBindingMatcher::registerTypeIfNotExported(
-    const clang::QualType &Type) {
-  // First, check if the type is already exported
-  auto AlreadyExported = this->ParsedClasses.find(Type.getAsString());
-  if (AlreadyExported != this->ParsedClasses.end()) {
-    return AlreadyExported->second.ExportedName;
-  }
-
-  // Okay, not exported, we need to check if it is a record
-  if (Type->isRecordType()) {
-    // Get the record declaration
-    const clang::RecordDecl *RD = Type->getAsRecordDecl();
-
-    // Check if it has a HushExport attribute
-    auto *HushExportAttr = RD->getAttr<clang::HushExportAttr>();
-    if (HushExportAttr == nullptr) {
-      return std::nullopt;
-    }
-
-    processHushExportClassDecl(HushExportAttr, RD);
-  } else if (Type->isPointerType()) {
-    // Check if it is a pointer to a record
-    const clang::QualType PointeeType = Type->getPointeeType();
-    if (PointeeType->isRecordType()) {
-      // Get the record declaration
-      const clang::RecordDecl *RD = PointeeType->getAsRecordDecl();
-
-      // Check if it has a HushExport attribute
-      auto *HushExportAttr = RD->getAttr<clang::HushExportAttr>();
-      if (HushExportAttr == nullptr) {
-        return std::nullopt;
-      }
-
-      processHushExportClassDecl(HushExportAttr, RD);
-    } else if (PointeeType->isBuiltinType()) {
-      // We don't need to do anything
-    } else if (PointeeType->isEnumeralType()) {
-      // Check if it is already parsed
-      auto FullyQualifiedName = PointeeType.getAsString();
-
-      if (FullyQualifiedName.find("enum ") != std::string::npos) {
-        FullyQualifiedName.erase(0, 5);
-      }
-    }
-  }
 }
 
 FieldOptions getMemberFieldOptions(const clang::FieldDecl *Field) {

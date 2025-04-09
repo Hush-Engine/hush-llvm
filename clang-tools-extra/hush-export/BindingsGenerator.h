@@ -66,12 +66,12 @@ struct FunctionParam {
   InnerTypeInfo InnerType; // Useful for span, string_view.
   bool IsPointer;
   bool IsReference;
-  bool IsConst;
 };
 
 struct ReturnTypeInfo {
   std::string Type;
   std::string InnerType; // Useful for span, string_view, vector,
+  std::string Name;
   bool IsEnum = false;
   bool IsReference = false;
 };
@@ -84,15 +84,23 @@ struct FunctionInfo {
   std::optional<std::shared_ptr<ExportedClass>> ContainingClass;
 };
 
+struct TypeDefInfo {
+  std::string Name;
+  std::string ExportedName;
+};
+
 class HushBindingMatcher
     : public clang::ast_matchers::MatchFinder::MatchCallback {
   std::map<std::string, ExportedTypeInfo> ParsedClasses;
   std::vector<std::shared_ptr<ExportedClass>> ParsedClassesVector;
   std::vector<std::shared_ptr<EnumDeclaration>> ParsedEnums;
   std::vector<FunctionInfo> Functions;
+  std::vector<TypeDefInfo> Typedefs;
 
 public:
-  HushBindingMatcher() {}
+  HushBindingMatcher() {
+    addSpecialTypes();
+  }
 
   void
   run(const clang::ast_matchers::MatchFinder::MatchResult &Result) override;
@@ -112,6 +120,9 @@ public:
   std::vector<FunctionInfo> &getFunctions() { return Functions; }
 
 private:
+
+  void addSpecialTypes();
+
   void processClassDecl(const clang::HushExportAttr *HushExportAttr,
                         const clang::RecordDecl *D);
 
@@ -125,26 +136,13 @@ private:
 private:
   void processSpecialTypeDecl(const clang::QualType D);
 
-  bool processPointerDecl(const clang::RecordDecl *D,
-                          clang::ASTContext &Context,
-                          const clang::FieldDecl *Field,
-                          clang::QualType FieldType,
-                          hush::ClassMemberVariable &NewField);
-  bool processFieldEnum(clang::ASTContext &Context,
-                        const clang::FieldDecl *Field,
-                        clang::QualType FieldType);
-
   void processHushExportClassDecl(const clang::HushExportAttr *HushExportAttr,
                                   const clang::RecordDecl *D);
-
-  void processPointerDecl(ClassMemberVariable &Member,
-                          const clang::FieldDecl *D);
 
   // Helper functions for exporting functions
 private:
   bool processPointerRet(const clang::FunctionDecl *FunctionDeclInfo,
-                         ReturnTypeInfo &ReturnType,
-                         const clang::QualType PointeeType);
+                         ReturnTypeInfo &ReturnType);
 
   bool processFuncReturnType(const clang::FunctionDecl *D,
                              FunctionInfo &FuncInfo,
@@ -157,6 +155,10 @@ private:
   bool processPointerParam(const clang::FunctionDecl *D,
                            const clang::ParmVarDecl *Param,
                            FunctionParam &FuncParam);
+
+  bool processReferenceParam(const clang::FunctionDecl *D,
+                             const clang::ParmVarDecl *Param,
+                             FunctionParam &FunctionParam);
 
   std::optional<std::string>
   registerTypeIfNotExported(const clang::QualType &Type);
