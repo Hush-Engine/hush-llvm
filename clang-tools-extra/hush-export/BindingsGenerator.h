@@ -23,6 +23,7 @@ struct ClassMemberVariable {
   std::size_t Size = 0;
   std::size_t Alignment = 0;
   bool IsHidden = false;
+  bool IsFunctionPointer = false;
 };
 
 struct ExportedClass {

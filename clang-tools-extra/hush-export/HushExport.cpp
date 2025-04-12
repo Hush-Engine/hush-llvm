@@ -79,6 +79,7 @@ int main(int argc, const char **argv) {
 
   std::string CppFile = "// Auto-generated file\n"
                         "// DO NOT EDIT\n\n"
+                        "#include \"bindings.hpp\"\n"
                         "#include \"HushBindings.h\"\n\n";
 
   hush::HushBindingMatcher BindingMatcher;
@@ -129,8 +130,17 @@ static void processClassHeader(
       // Process the class
       HeaderFile += "typedef struct " + ParsedClass->ExportedName + " {\n";
       for (auto &Member : ParsedClass->Members) {
-        if (!Member.IsHidden) {
+        if (!Member.IsHidden && !Member.IsFunctionPointer) {
           HeaderFile += "\t" + Member.Type + " " + Member.Name + ";\n";
+        } else if (!Member.IsHidden && Member.IsFunctionPointer) {
+          // void * (*) (params...)
+          // Search for the first (
+          size_t FirstParen = Member.Type.find(')');
+          std::string FieldName = Member.Type;
+          if (FirstParen != Member.Type.npos) {
+            FieldName.replace(FirstParen, 1, Member.Name + ")");
+          }
+          HeaderFile += "\t" + FieldName + ";\n";
         } else {
           HeaderFile += "\talignas(" + std::to_string(Member.Alignment) +
                         ") char " + Member.Name + "[" +
@@ -215,10 +225,11 @@ processFunctions(std::string &HeaderFile, std::string &CppFile,
           InnerType.erase(0, 5);
         }
 
-        FunctionPrototype += "void (*retFunc)(" + InnerType + "* " + ", size_t, void*), void* retUserData";
+        FunctionPrototype += "void (*retFunc)(" + InnerType + "* " +
+                             ", size_t, void*), void* retUserData";
 
-        FuncPointerInfo.Parameters.push_back("void (*retFunc)(" +
-                                             InnerType + "*, size_t, void*)");
+        FuncPointerInfo.Parameters.push_back("void (*retFunc)(" + InnerType +
+                                             "*, size_t, void*)");
         FuncPointerInfo.Parameters.push_back("void* retUserData");
 
         if (Function.Parameters.size() > 0 ||
@@ -292,9 +303,8 @@ processFunctions(std::string &HeaderFile, std::string &CppFile,
             InnerType.erase(0, 5);
           }
 
-          FunctionPrototype += InnerType + " *" +
-                               Param.Name + "Data, const size_t " + Param.Name +
-                               "Size";
+          FunctionPrototype += InnerType + " *" + Param.Name +
+                               "Data, const size_t " + Param.Name + "Size";
 
           FuncPointerInfo.Parameters.push_back(InnerType + "* ");
 
@@ -351,7 +361,8 @@ processFunctions(std::string &HeaderFile, std::string &CppFile,
 
     if (HasCallback) {
       FunctionBody += "\tretFunc(reinterpret_cast<" +
-                      Function.ReturnType.InnerType + "*>(result______.data()), "
+                      Function.ReturnType.InnerType +
+                      "*>(result______.data()), "
                       "result______.size(), retUserData);\n";
     } else if (Function.ReturnType.IsEnum) {
       FunctionBody += "\treturn static_cast<" + Function.ReturnType.Type +
