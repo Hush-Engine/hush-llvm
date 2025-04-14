@@ -74,6 +74,7 @@ int main(int argc, const char **argv) {
   std::string HeaderFile = "#pragma once\n"
                            "#include <stdint.h>\n\n\n"
                            "#ifdef __cplusplus\n"
+                           "typedef bool _Bool;\n"
                            "extern \"C\" {\n"
                            "#endif\n\n";
 
@@ -294,8 +295,7 @@ processFunctions(std::string &HeaderFile, std::string &CppFile,
         if (Param.Type.find("std::span") != std::string::npos ||
             Param.Type.find("std::string_view") != std::string::npos) {
           ArgPreprocess += "\tauto " + Param.Name + "Data__ = " + Param.Type +
-                           "(" + Param.Name + "Data, " + Param.Name +
-                           "Size);\n";
+                           "(reinterpret_cast<" + Param.InnerType.RealType + "*>(" + Param.Name + "Data), " + Param.Name + "Size);\n";
           std::string InnerType = Param.InnerType.Type;
 
           if (Param.Type.find("std::uint") != std::string::npos ||
@@ -439,11 +439,11 @@ void processParsedEnums(
       // Export as an enum
       Header += "typedef enum " + Enum->ExportedName + " {\n";
       for (auto &EnumValue : Enum->EnumValues) {
-        Header += "\t" + EnumValue.Name + " = " +
+        Header += "\t" + Enum->ExportedName + "_" + EnumValue.Name + " = " +
                   std::to_string(EnumValue.Value) + ",\n";
       }
 
-      Header += "} HushParsedEnum;\n";
+      Header += "} " + Enum->ExportedName + ";\n";
     } else {
       std::string InnerType = Enum->InnerType;
       // If the inner type is std::int* or std::uint*, we need to remove the

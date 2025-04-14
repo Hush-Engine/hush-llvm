@@ -57,6 +57,7 @@ struct ExportedTypeInfo {
 
 struct InnerTypeInfo {
   std::string Type;
+  std::string RealType;
 };
 
 struct FunctionParam {

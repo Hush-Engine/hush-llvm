@@ -378,9 +378,13 @@ void hush::HushBindingMatcher::processFunctionDecl(
 
       FuncParam.Type = FullyQualifiedName;
       FuncParam.RealType = FullyQualifiedName;
-      // FuncParam.EnumType = FullyQualifiedName;
+      FuncParam.EnumType = FullyQualifiedName;
 
-      std::replace(FuncParam.EnumType.begin(), FuncParam.EnumType.end(), ':', '_');
+      std::replace(FuncParam.Type.begin(), FuncParam.Type.end(), ':',
+                   '_');
+
+      // std::replace(FuncParam.EnumType.begin(), FuncParam.EnumType.end(), ':',
+      //              '_');
     }
 
     // Add the parameter
@@ -732,7 +736,8 @@ void hush::HushBindingMatcher::processHushExportClassDecl(
       if (!FieldType->isBuiltinType()) {
         // Get the field type without pointers, const, volatile, etc.
         const clang::QualType FieldTypeNoCV = FieldType.getUnqualifiedType();
-        std::string FieldTypeName = FieldTypeNoCV.getCanonicalType().getAsString();
+        std::string FieldTypeName =
+            FieldTypeNoCV.getCanonicalType().getAsString();
         if (auto FoundHush = FieldTypeName.find("Hush"); FoundHush == 0) {
           unsigned int DiagID = Context.getDiagnostics().getCustomDiagID(
               clang::DiagnosticsEngine::Error,
@@ -1013,7 +1018,7 @@ bool hush::HushBindingMatcher::processRecordTypeParam(
 
   // First, check if it as a special type
   if (FullyQualifiedName.find("std::span") != std::string::npos ||
-      FullyQualifiedName.find("std::string_view")) {
+      FullyQualifiedName.find("std::string_view") != std::string::npos) {
 
     // Get the inner type
     clang::QualType InnerType = Param->getType()
@@ -1023,51 +1028,34 @@ bool hush::HushBindingMatcher::processRecordTypeParam(
                                     .getAsType();
 
     // If the inner type is a record, we need to check if it is already parsed
-    if (InnerType->isRecordType()) {
-      std::string InnerFullyQualifiedName = InnerType.getAsString();
+    std::string InnerFullyQualifiedName =
+        InnerType.getCanonicalType().getAsString(
+            D->getASTContext().getLangOpts());
 
-      // Okay, we have a class, check if it is already parsed
-      auto AlreadyExported = this->ParsedClasses.find(InnerFullyQualifiedName);
-      if (AlreadyExported == this->ParsedClasses.end()) {
-        // Get the record declaration
-        const clang::RecordDecl *RD = InnerType->getAsRecordDecl();
+    FuncParam.InnerType.RealType = InnerFullyQualifiedName;
 
-        const clang::HushExportAttr *SpecialTypeAttr =
-            RD->getAttr<clang::HushExportAttr>();
+    // Replace the inner fully qualified by changing the :: to _
+    std::replace(InnerFullyQualifiedName.begin(), InnerFullyQualifiedName.end(),
+                 ':', '_');
 
-        if (SpecialTypeAttr == nullptr) {
-          unsigned DiagID = D->getASTContext().getDiagnostics().getCustomDiagID(
-              clang::DiagnosticsEngine::Error, "Error: %0 is not exported\n");
+    FuncParam.InnerType.Type = std::move(InnerFullyQualifiedName);
 
-          clang::DiagnosticsEngine &DiagEngine =
-              D->getASTContext().getDiagnostics();
-          DiagEngine.Report(Param->getLocation(), DiagID)
-              << InnerFullyQualifiedName;
-          return false;
-        }
+    // For the fully qualified name, we need to replace the inner type with the
+    // InnerTypeName, to do this, we need to find two things for std::span:
+    // 1. The first <, which is the start of the template
+    // 2. The first >, which is the end of the template
+    auto TemplatePos = FullyQualifiedName.find('<');
+    auto TemplateEndPos = FullyQualifiedName.find_last_of('>');
 
-        processHushExportClassDecl(SpecialTypeAttr, RD);
-        // Find it again
-        AlreadyExported = this->ParsedClasses.find(InnerFullyQualifiedName);
-        if (AlreadyExported == this->ParsedClasses.end()) {
-          unsigned DiagID = D->getASTContext().getDiagnostics().getCustomDiagID(
-              clang::DiagnosticsEngine::Error, "Error: %0 is not exported\n");
-
-          clang::DiagnosticsEngine &DiagEngine =
-              D->getASTContext().getDiagnostics();
-          DiagEngine.Report(Param->getLocation(), DiagID)
-              << InnerFullyQualifiedName;
-          return false;
-        }
-      }
-
-      FuncParam.InnerType.Type = AlreadyExported->second.ExportedName;
-    } else {
-      FuncParam.InnerType.Type = InnerType.getAsString();
+    if (TemplatePos != std::string::npos &&
+        TemplateEndPos != std::string::npos) {
+      FullyQualifiedName.replace(
+          TemplatePos + 1, TemplateEndPos - TemplatePos - 1,
+          FuncParam.InnerType.RealType);
     }
 
-    FuncParam.Type = FullyQualifiedName;
 
+    FuncParam.Type = FullyQualifiedName;
   } else {
     // Okay, we have a class, check if it is already parsed
     auto AlreadyExported = this->ParsedClasses.find(FullyQualifiedName);
@@ -1099,8 +1087,8 @@ bool hush::HushBindingMatcher::processPointerParam(
     InnerType = InnerType->getPointeeType();
   }
 
-  std::string FullyQualifiedName =
-      PointerType.getCanonicalType().getAsString(D->getASTContext().getLangOpts());
+  std::string FullyQualifiedName = PointerType.getCanonicalType().getAsString(
+      D->getASTContext().getLangOpts());
 
   bool IsSpecialType = false;
 
@@ -1117,21 +1105,22 @@ bool hush::HushBindingMatcher::processPointerParam(
     auto AlreadyExported = this->ParsedClasses.find(InnerFullyQualifiedName);
 
     if (AlreadyExported == this->ParsedClasses.end()) {
-     unsigned DiagID = D->getASTContext().getDiagnostics().getCustomDiagID(
+      unsigned DiagID = D->getASTContext().getDiagnostics().getCustomDiagID(
           clang::DiagnosticsEngine::Error, "Error: %0 is not exported\n");
 
       clang::DiagnosticsEngine &DiagEngine =
           D->getASTContext().getDiagnostics();
-      DiagEngine.Report(Param->getLocation(), DiagID) << InnerFullyQualifiedName;
+      DiagEngine.Report(Param->getLocation(), DiagID)
+          << InnerFullyQualifiedName;
       return false;
     }
 
     FuncParam.RealType = FullyQualifiedName;
     FuncParam.Type = FullyQualifiedName;
 
-    FuncParam.Type.replace(
-        FuncParam.Type.find(InnerFullyQualifiedName), InnerFullyQualifiedName.size(),
-        AlreadyExported->second.ExportedName);
+    FuncParam.Type.replace(FuncParam.Type.find(InnerFullyQualifiedName),
+                           InnerFullyQualifiedName.size(),
+                           AlreadyExported->second.ExportedName);
   } else {
     FuncParam.Type = FullyQualifiedName;
     FuncParam.RealType = FullyQualifiedName;
@@ -1176,17 +1165,15 @@ bool hush::HushBindingMatcher::processReferenceParam(
         "Error: %0 is a reference to a pointer, it is currently not "
         "supported");
 
-    clang::DiagnosticsEngine &DiagEngine =
-        D->getASTContext().getDiagnostics();
+    clang::DiagnosticsEngine &DiagEngine = D->getASTContext().getDiagnostics();
 
     DiagEngine.Report(Param->getLocation(), DiagID) << InnerTypeName;
 
     return false;
   }
 
-
-  std::string FullyQualifiedName =
-      ReferenceType.getCanonicalType().getAsString(D->getASTContext().getLangOpts());
+  std::string FullyQualifiedName = ReferenceType.getCanonicalType().getAsString(
+      D->getASTContext().getLangOpts());
 
   bool IsSpecialType = false;
 
@@ -1204,20 +1191,21 @@ bool hush::HushBindingMatcher::processReferenceParam(
 
     if (AlreadyExported == this->ParsedClasses.end()) {
       unsigned DiagID = D->getASTContext().getDiagnostics().getCustomDiagID(
-           clang::DiagnosticsEngine::Error, "Error: %0 is not exported\n");
+          clang::DiagnosticsEngine::Error, "Error: %0 is not exported\n");
 
       clang::DiagnosticsEngine &DiagEngine =
           D->getASTContext().getDiagnostics();
-      DiagEngine.Report(Param->getLocation(), DiagID) << InnerFullyQualifiedName;
+      DiagEngine.Report(Param->getLocation(), DiagID)
+          << InnerFullyQualifiedName;
       return false;
     }
 
     FuncParam.RealType = FullyQualifiedName;
     FuncParam.Type = FullyQualifiedName;
 
-    FuncParam.Type.replace(
-        FuncParam.Type.find(InnerFullyQualifiedName), InnerFullyQualifiedName.size(),
-        AlreadyExported->second.ExportedName);
+    FuncParam.Type.replace(FuncParam.Type.find(InnerFullyQualifiedName),
+                           InnerFullyQualifiedName.size(),
+                           AlreadyExported->second.ExportedName);
   } else {
     FuncParam.Type = FullyQualifiedName;
     FuncParam.RealType = FullyQualifiedName;
@@ -1226,10 +1214,10 @@ bool hush::HushBindingMatcher::processReferenceParam(
   }
 
   FuncParam.Type.replace(FuncParam.Type.find('&'), 1, "*");
+  FuncParam.RealType.replace(FuncParam.RealType.find('&'), 1, "*");
 
   FuncParam.Name = Param->getName();
   FuncParam.IsReference = true;
-
 
   return true;
 }
