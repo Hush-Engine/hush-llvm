@@ -5010,3 +5010,24 @@ def HushExport : InheritableAttr {
   let Subjects = SubjectList<[Function, Record, NonBitField, ParmVar, Enum]>;
   let Documentation = [Undocumented];
 }
+
+def HushReflect : InheritableAttr {
+  let Spellings = [CXX11<"hush", "reflect">];
+  let Args = [VariadicExprArgument<"ReflectConfig">];
+  let Subjects = SubjectList<[Record, Enum]>;
+  let Documentation = [Undocumented];
+}
+
+def HushFunction : InheritableAttr {
+  let Spellings = [CXX11<"hush", "function">];
+  let Args = [VariadicExprArgument<"FunctionConfig">];
+  let Subjects = SubjectList<[Function]>;
+  let Documentation = [Undocumented];
+}
+
+def HushProperty : InheritableAttr {
+  let Spellings = [CXX11<"hush", "property">];
+  let Args = [VariadicExprArgument<"PropertyConfig">];
+  let Subjects = SubjectList<[NonBitField]>;
+  let Documentation = [Undocumented];
+}

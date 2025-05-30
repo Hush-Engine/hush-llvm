@@ -7730,6 +7730,16 @@ ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D, const ParsedAttr &AL,
   case ParsedAttr::AT_HushExport:
     handleHushExportAttr(S, D, AL);
     break;
+  case ParsedAttr::AT_HushReflect:
+    // Just pass as-is, no special handling needed.
+    handleSimpleAttribute<HushReflectAttr>(S, D, AL);
+    break;
+  case ParsedAttr::AT_HushFunction:
+    handleSimpleAttribute<HushFunctionAttr>(S, D, AL);
+    break;
+  case ParsedAttr::AT_HushProperty:
+    handleSimpleAttribute<HushPropertyAttr>(S, D, AL);
+    break;
   }
 }
 

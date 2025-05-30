@@ -50,3 +50,4 @@ if(CLANG_INCLUDE_TESTS)
 endif()
 
 add_subdirectory(hush-export)
+add_subdirectory(hush-reflection)
