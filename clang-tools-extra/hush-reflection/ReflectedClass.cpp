@@ -2,9 +2,11 @@
 
 ReflectedClass::ReflectedClass(const clang::CXXRecordDecl *decl)
     : m_decl(decl) {
-  this->m_className = decl->getNameAsString();
+  this->m_className = decl->getQualifiedNameAsString();
 
   Fields = this->getFields();
+  getDeclaredFunctions();
+  getConstructors();
 }
 
 bool ReflectedClass::generateReflectionCode(llvm::raw_ostream &os) const {
@@ -34,6 +36,14 @@ bool ReflectedClass::generateReflectionCode(llvm::raw_ostream &os) const {
   ReflectionData += this->m_className;
   ReflectionData += ">()\\\n";
 
+  for (const auto &Ctor : Constructors) {
+    ReflectionData += Ctor.generateReflectionCode();
+  }
+
+  for (const auto &Func : Functions) {
+    ReflectionData += Func.generateReflectionCode();
+  }
+
   for (const auto &Field : Fields) {
     ReflectionData += Field.generatePropertyReflectionCode();
   }
@@ -48,12 +58,13 @@ bool ReflectedClass::generateSerializeCode(llvm::raw_ostream &os) const {
 
   std::string SerializeData;
   SerializeData.reserve(1024 * 32);
-  SerializeData += "template <typename T> Hush::Serialization::ESerializationError "
-                   "Serialize(T &serializer) "
-                   "const {\\\n";
-
   SerializeData +=
-      "  auto error = serializer.template Serialize<std::string_view>(\"__type\", \"";
+      "template <typename T> Hush::Serialization::ESerializationError "
+      "Serialize(T &serializer) "
+      "const {\\\n";
+
+  SerializeData += "  auto error = serializer.template "
+                   "Serialize<std::string_view>(\"__type\", \"";
   SerializeData += this->m_className;
   SerializeData += "\");\\\n";
   SerializeData += "  if (error != Hush::Serialization::ESerializationError::"
@@ -102,7 +113,11 @@ bool ReflectedClass::generateDeserializeCode(llvm::raw_ostream &os) const {
   DeserializeData += this->m_className;
   DeserializeData += " *instance, ";
   DeserializeData += "Hush::Serialization::EFormatDescribingType format) : "
-                     "IVisitor(parent, format), ";
+                     "IVisitor(parent, format)";
+
+  if (!Fields.empty()) {
+    DeserializeData += ", ";
+  }
 
   for (const auto &Field : Fields) {
     DeserializeData += Field.getVisitorFieldName();
@@ -110,32 +125,38 @@ bool ReflectedClass::generateDeserializeCode(llvm::raw_ostream &os) const {
     DeserializeData += Field.getFieldName();
     DeserializeData += ", format), ";
   }
+
   // Remove the last comma
   if (!Fields.empty()) {
     DeserializeData.erase(DeserializeData.size() - 2);
   }
-  DeserializeData += "{\\\n";
+
+  DeserializeData += "{\\\n"
+                     "(void)instance;\\\n";
   DeserializeData += "    if (format == "
                      "Hush::Serialization::EFormatDescribingType::"
                      "NonSelfDescribing) {\\\n";
-  DeserializeData += "      SetStartingVisitor(&";
+  DeserializeData += "      SetStartingVisitor(";
 
   if (!Fields.empty()) {
+    DeserializeData += "&";
     DeserializeData += Fields[0].getVisitorFieldName();
     DeserializeData += ");\\\n";
-  }
 
-  for (size_t I = 1; I < Fields.size() - 1; ++I) {
-    DeserializeData += Fields[I].getVisitorFieldName();
-    DeserializeData += ".SetParentVisitor(&";
-    DeserializeData += Fields[I - 1].getVisitorFieldName();
-    DeserializeData += ");\\\n";
-  }
+    for (size_t I = 1; I < Fields.size() - 1; ++I) {
+      DeserializeData += Fields[I].getVisitorFieldName();
+      DeserializeData += ".SetParentVisitor(&";
+      DeserializeData += Fields[I - 1].getVisitorFieldName();
+      DeserializeData += ");\\\n";
+    }
 
-  // Get the last field
-  if (!Fields.empty()) {
-    DeserializeData += Fields.back().getVisitorFieldName();
-    DeserializeData += ".SetParentVisitor(GetParentVisitor());\\\n";
+    // Get the last field
+    if (!Fields.empty()) {
+      DeserializeData += Fields.back().getVisitorFieldName();
+      DeserializeData += ".SetParentVisitor(GetParentVisitor());\\\n";
+    }
+  } else {
+    DeserializeData += "GetParentVisitor());\\\n";
   }
 
   DeserializeData += "    } else {\\\n";
@@ -165,6 +186,7 @@ bool ReflectedClass::generateDeserializeCode(llvm::raw_ostream &os) const {
 
   DeserializeData +=
       "  Result VisitKey(std::string_view value) override {\\\n"
+      "    (void)value;\\\n"
       "    if (!insideObject) {\\\n"
       "      return "
       "Hush::Serialization::EDeserializationError::InvalidData;\\\n"
@@ -204,4 +226,39 @@ std::vector<ClassField> ReflectedClass::getFields() const {
   }
 
   return Fields;
+}
+
+void ReflectedClass::getDeclaredFunctions() {
+  for (const auto *MemberFunc : this->m_decl->methods()) {
+    if (MemberFunc->isStatic()) {
+      continue; // Skip static, constructors and destructors
+    }
+
+    if (llvm::isa<clang::CXXConstructorDecl>(MemberFunc) ||
+        llvm::isa<clang::CXXDestructorDecl>(MemberFunc)) {
+      continue; // Skip constructors and destructors
+    }
+
+    // Does it have the HushFunctionAttr attribute?
+    const clang::HushFunctionAttr *FuncAttr =
+        MemberFunc->getAttr<clang::HushFunctionAttr>();
+
+    if (!FuncAttr) {
+      continue; // Skip if it doesn't have the attribute
+    }
+    this->Functions.emplace_back(MemberFunc, FuncAttr);
+  }
+}
+
+void ReflectedClass::getConstructors() {
+  for (const auto *Constructor : this->m_decl->ctors()) {
+    // Does it have the HushFunctionAttr attribute?
+    const clang::HushFunctionAttr *FuncAttr =
+        Constructor->getAttr<clang::HushFunctionAttr>();
+
+    if (!FuncAttr) {
+      continue; // Skip if it doesn't have the attribute
+    }
+    this->Constructors.emplace_back(Constructor, FuncAttr);
+  }
 }

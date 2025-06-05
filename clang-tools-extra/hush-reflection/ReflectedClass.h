@@ -1,5 +1,8 @@
 #pragma once
 #include "ClassField.h"
+#include "CtorInfo.h"
+#include "FunctionInfo.h"
+
 #include "clang/Tooling/Tooling.h"
 
 class ReflectedClass {
@@ -15,7 +18,13 @@ public:
 private:
   std::vector<ClassField> getFields() const;
 
+  void getDeclaredFunctions();
+
+  void getConstructors();
+
   std::vector<ClassField> Fields;
+  std::vector<FunctionInfo> Functions;
+  std::vector<CtorInfo> Constructors;
 
   const clang::CXXRecordDecl *m_decl;
 

@@ -5,6 +5,8 @@ add_clang_executable(hush-reflection
         HushReflectionMatcher.cpp
         ClassField.cpp
         ReflectedClass.cpp
+        CtorInfo.cpp
+        FunctionInfo.cpp
 )
 target_link_libraries(hush-reflection
         PRIVATE

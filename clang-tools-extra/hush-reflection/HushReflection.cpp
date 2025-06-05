@@ -81,6 +81,7 @@ int main(int argc, const char **argv) {
 
   std::error_code EC;
   llvm::raw_fd_ostream OutFile(StampPath, EC, llvm::sys::fs::OF_Text);
+  llvm::outs() << "Generating output stamp file: " << StampPath << "\n";
   if (EC) {
     llvm::errs() << "Error opening file " << StampPath << ": " << EC.message()
                  << "\n";

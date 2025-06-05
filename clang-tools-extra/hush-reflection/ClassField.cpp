@@ -5,9 +5,11 @@ ClassField::ClassField(const clang::FieldDecl *fieldDecl,
     : FieldDecl(fieldDecl), PropertyAttr(propertyAttr), FieldGetter(),
       FieldSetter() {
 
+  clang::PrintingPolicy PrintingPolicy =
+      fieldDecl->getASTContext().getPrintingPolicy();
   FieldName = fieldDecl->getName().str();
-  FieldTypeName = fieldDecl->getType().getAsString();
-  ParentClassName = fieldDecl->getParent()->getNameAsString();
+  FieldTypeName = fieldDecl->getType().getAsString(PrintingPolicy);
+  ParentClassName = fieldDecl->getParent()->getQualifiedNameAsString();
   VisitorFieldName = FieldName;
   VisitorFieldName += "Visitor";
 
@@ -29,7 +31,12 @@ std::string ClassField::generatePropertyReflectionCode() const {
   ReflectionCode += generateSetterCode();
   ReflectionCode += ", ";
   ReflectionCode += generateGetterCode();
-  ReflectionCode += "))\\\n";
+  ReflectionCode += ", ";
+  ReflectionCode += " offsetof(";
+  ReflectionCode += ParentClassName;
+  ReflectionCode += ", ";
+  ReflectionCode += FieldName;
+  ReflectionCode += ")))\\\n";
 
   return ReflectionCode;
 }
@@ -57,7 +64,9 @@ std::string ClassField::getVisitorFieldType() const {
   return VisitorField;
 }
 
-llvm::StringRef ClassField::getVisitorFieldName() const { return VisitorFieldName; }
+llvm::StringRef ClassField::getVisitorFieldName() const {
+  return VisitorFieldName;
+}
 
 llvm::StringRef ClassField::getFieldName() const { return FieldName; }
 
