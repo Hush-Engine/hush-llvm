@@ -76,6 +76,7 @@ struct ReturnTypeInfo {
   std::string Name;
   bool IsEnum = false;
   bool IsReference = false;
+  bool PreventDtor = false;
 };
 
 struct FunctionInfo {

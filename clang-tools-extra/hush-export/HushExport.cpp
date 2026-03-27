@@ -1,8 +1,6 @@
 // Declares clang::SyntaxOnlyAction.
 #include "clang/Frontend/FrontendActions.h"
-#include "clang/Tooling/ArgumentsAdjusters.h"
 #include "clang/Tooling/CommonOptionsParser.h"
-#include "clang/Tooling/CompilationDatabase.h"
 #include "clang/Tooling/Tooling.h"
 // Declares llvm::cl::extrahelp.
 #include "llvm/Support/CommandLine.h"
@@ -10,7 +8,6 @@
 #include <clang/ASTMatchers/ASTMatchFinder.h>
 #include <clang/ASTMatchers/ASTMatchers.h>
 #include <clang/ExtractAPI/API.h>
-#include <string_view>
 
 #include "llvm/DebugInfo/CodeView/CodeView.h"
 #include "llvm/Support/BranchProbability.h"
@@ -23,15 +20,7 @@ using namespace clang::ast_matchers;
 
 // Apply a custom category to all command-line options so that they are the
 // only ones displayed.
-static llvm::cl::OptionCategory MyToolCategory("hush-export options");
-
-static cl::opt<std::string> CompilerTarget(
-  "compiler-target",
-  cl::desc("The compiler's compatibility mode: 'clang' or 'msvc' (defaults to clang)"),
-  cl::value_desc("mode"),
-  cl::init("clang"),
-  cl::cat(MyToolCategory)
-);
+static llvm::cl::OptionCategory MyToolCategory("my-tool options");
 
 DeclarationMatcher HushExportAttrMatcher =
     decl(recordDecl(hasAttr(clang::attr::HushExport))).bind("hushExportable");
@@ -73,26 +62,8 @@ int main(int argc, const char **argv) {
     return 1;
   }
   CommonOptionsParser &OptionsParser = ExpectedParser.get();
-  CompilationDatabase& CompileDb = OptionsParser.getCompilations();
-  const auto& PathList = OptionsParser.getSourcePathList();
-  ClangTool Tool(CompileDb, PathList);
-  CommandLineArguments AdditionalArgs {
-    #ifdef _WIN64
-    "-D_WIN64"
-    #endif
-  };
-
-  if (CompilerTarget == "msvc") {
-    AdditionalArgs.emplace_back("-target");
-    AdditionalArgs.emplace_back("x86_64-pc-windows-msvc");
-    AdditionalArgs.emplace_back("-fms-compatibility");
-    AdditionalArgs.emplace_back("-fms-extensions");
-  }
-  
-  Tool.appendArgumentsAdjuster(getInsertArgumentAdjuster(
-    AdditionalArgs,
-    ArgumentInsertPosition::BEGIN
-  ));
+  ClangTool Tool(OptionsParser.getCompilations(),
+                 OptionsParser.getSourcePathList());
 
   std::error_code EC;
   llvm::raw_fd_ostream HeaderOutFile("HushBindings.h", EC,
@@ -404,10 +375,19 @@ processFunctions(std::string &HeaderFile, std::string &CppFile,
         FunctionBody += "\treturn *reinterpret_cast<" +
                         Function.ReturnType.Type + ">(result______);\n";
       } else {
-        // Not a pointer or reference, just return the result, construct
-        // in-place
-        FunctionBody += "\treturn *reinterpret_cast<" +
-                        Function.ReturnType.Type + "*>(&result______);\n";
+        if (Function.ReturnType.PreventDtor) {
+            // We need to do the "hack" to prevent the destructor from being called, by replacing the
+            // by doing a placement new and assigning to a pointer of the type.
+            FunctionBody += "\tstd::aligned_storage_t<sizeof(" + Function.ReturnType.Type + ")> resultStorage_____;\n";
+            FunctionBody += "\tauto *resultPtr = reinterpret_cast<decltype(result______)*>(&resultStorage_____);\n";
+            FunctionBody += "\tnew (resultPtr) decltype(result______)(std::move(result______));\n";
+            FunctionBody += "\treturn *reinterpret_cast<" + Function.ReturnType.Type + "*>(resultPtr);\n";
+        } else {
+            // Not a pointer or reference, just return the result, construct
+            // in-place
+            FunctionBody += "\treturn *reinterpret_cast<" +
+                            Function.ReturnType.Type + "*>(&result______);\n";
+        }
       }
     }
 

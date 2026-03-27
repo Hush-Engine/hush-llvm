@@ -2,7 +2,9 @@
 
 #include "ParserCommon.h"
 
+#include "clang/AST/Type.h"
 #include "llvm/DebugInfo/PDB/PDBTypes.h"
+#include "llvm/Support/Casting.h"
 
 const std::set<std::string> SpecialTypes = {"glm::vec", "glm::mat", "glm::quat",
                                             "glm::transform", "glm::color"};
@@ -13,6 +15,10 @@ struct FieldOptions {
   bool Ignore;
   std::string Name;
 };
+
+static bool hasDestructor(const clang::QualType QT) {
+  return QT.isDestructedType() != clang::QualType::DK_none;
+}
 
 static bool isPOD(const clang::RecordDecl *D) {
   const auto &Context = D->getASTContext();
@@ -887,6 +893,7 @@ bool hush::HushBindingMatcher::processPointerRet(
 bool hush::HushBindingMatcher::processFuncReturnType(
     const clang::FunctionDecl *D, FunctionInfo &FuncInfo,
     clang::QualType ReturnType) {
+
   if (ReturnType->isBuiltinType()) {
     FuncInfo.ReturnType.Type = ReturnType.getCanonicalType().getAsString();
   } else {
@@ -962,6 +969,15 @@ bool hush::HushBindingMatcher::processFuncReturnType(
     } else {
       bool IsSpecialType = false;
       clang::QualType ReturnTypeNoCV = ReturnType;
+
+      // We have a special case for classes that:
+      // 1. Are not pointers or references
+      // 2. Have destructors.
+      // In this case, we need to do a "hack" to prevent the destructor from being called, by replacing the
+      // by doing a placement new and assigning to a pointer of the type.
+      // This is needed because otherwise, when the function returns, the destructor will be called on the returned value, which is not what we want.
+      // And we don't want to allocate on the heap.
+      FuncInfo.ReturnType.PreventDtor = hasDestructor(ReturnType);
 
       while (ReturnTypeNoCV->isPointerType()) {
         ReturnTypeNoCV = ReturnTypeNoCV->getPointeeType();
