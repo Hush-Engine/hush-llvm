@@ -20,14 +20,16 @@ bool ReflectedClass::generateReflectionCode(llvm::raw_ostream &os) const {
       "#include <serialization/Deserialization.hpp>\n\n"
       "#ifdef HUSH_GENERATED_BODY\n"
       "#undef HUSH_GENERATED_BODY\n"
-      "#endif\n\n"
-
+      "#endif\n"
+      "#ifdef RegisterClass\n"
+      "#undef RegisterClass\n"
+      "#endif\n"
       "#define HUSH_GENERATED_BODY \\\n"
       "public: \\\n"
       "  static constexpr std::uint64_t TypeId() { return \\\n"
       "Hush::Hashing::Fnv1a64(TypeName()); } \\\n"
       "  static constexpr std::string_view TypeName() { return \"";
-  ReflectionData += this->m_className;
+  ReflectionData += this->m_decl->getName(); // Unqualified name meant to interact with the scripting systems (TODO: use an actual property to decide which classes are internal and which can be accesible through scripting)
   ReflectionData +=
       "\"; }\\\n"
       "  static void RegisterReflection(Hush::Reflection::ReflectionDB &db) { "
@@ -54,6 +56,7 @@ bool ReflectedClass::generateReflectionCode(llvm::raw_ostream &os) const {
 
   return true;
 }
+
 bool ReflectedClass::generateSerializeCode(llvm::raw_ostream &os) const {
 
   std::string SerializeData;
