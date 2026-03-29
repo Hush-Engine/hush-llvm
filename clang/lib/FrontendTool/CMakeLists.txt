@@ -4,9 +4,12 @@ set(LLVM_LINK_COMPONENTS
   )
 
 set(link_libs
+  clangScalableStaticAnalysisFrameworkCore
+  clangScalableStaticAnalysisFrameworkFrontend
   clangBasic
   clangCodeGen
   clangDriver
+  clangOptions
   clangExtractAPI
   clangFrontend
   clangRewriteFrontend
@@ -20,8 +23,17 @@ if(CLANG_ENABLE_CIR)
   )
   list(APPEND link_libs
     clangCIRFrontendAction
+    MLIRCIRTransforms
     MLIRIR
+    MLIRPass
     )
+  list(APPEND deps
+    MLIRBuiltinLocationAttributesIncGen
+    MLIRBuiltinTypeInterfacesIncGen
+    )
+
+  include_directories(${LLVM_MAIN_SRC_DIR}/../mlir/include)
+  include_directories(${CMAKE_BINARY_DIR}/tools/mlir/include)
 endif()
 
 if(CLANG_ENABLE_STATIC_ANALYZER)

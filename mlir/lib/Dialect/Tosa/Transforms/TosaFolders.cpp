@@ -15,13 +15,12 @@
 
 #include "mlir/Dialect/Tosa/IR/TosaOps.h"
 #include "mlir/Dialect/Tosa/Transforms/Passes.h"
+#include "mlir/Dialect/Tosa/Utils/ConversionUtils.h"
 #include "mlir/Dialect/Utils/IndexingUtils.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Matchers.h"
-#include "mlir/Pass/Pass.h"
-#include "llvm/ADT/APFloat.h"
-#include "llvm/ADT/FloatingPointMode.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 
 using namespace mlir;
@@ -183,6 +182,7 @@ DenseElementsAttr transposeType(const RangeType &data, ShapedType inputType,
 DenseElementsAttr transpose(ElementsAttr attr, ShapedType inputType,
                             ShapedType outputType,
                             llvm::ArrayRef<int64_t> permValues) {
+  // Handle generic ElementsAttr
   if (auto data = attr.tryGetValues<bool>())
     return transposeType(*data, inputType, outputType, permValues);
 
@@ -203,6 +203,35 @@ DenseElementsAttr transpose(ElementsAttr attr, ShapedType inputType,
 
   if (auto data = attr.tryGetValues<APFloat>())
     return transposeType(*data, inputType, outputType, permValues);
+
+  // Handle DenseResourceElementsAttr
+  if (isa<DenseResourceElementsAttr>(attr)) {
+    auto elementTy = attr.getElementType();
+
+    if (auto data = tryGetDenseResourceValues<bool>(attr);
+        data && elementTy.isInteger(1))
+      return transposeType(*data, inputType, outputType, permValues);
+
+    if (auto data = tryGetDenseResourceValues<int8_t>(attr);
+        data && elementTy.isInteger(8))
+      return transposeType(*data, inputType, outputType, permValues);
+
+    if (auto data = tryGetDenseResourceValues<int16_t>(attr);
+        data && elementTy.isInteger(16))
+      return transposeType(*data, inputType, outputType, permValues);
+
+    if (auto data = tryGetDenseResourceValues<int32_t>(attr);
+        data && elementTy.isInteger(32))
+      return transposeType(*data, inputType, outputType, permValues);
+
+    if (auto data = tryGetDenseResourceValues<int64_t>(attr);
+        data && elementTy.isInteger(64))
+      return transposeType(*data, inputType, outputType, permValues);
+
+    if (auto data = tryGetDenseResourceValues<float>(attr);
+        data && elementTy.isF32())
+      return transposeType(*data, inputType, outputType, permValues);
+  }
 
   return nullptr;
 }
@@ -325,8 +354,7 @@ llvm::APInt calculateReducedValue(const mlir::ElementsAttr &oldTensorAttr,
   for (int64_t reductionAxisVal = 1; reductionAxisVal < oldShape[reductionAxis];
        ++reductionAxisVal) {
 
-    int64_t stride = std::accumulate(oldShape.begin() + reductionAxis + 1,
-                                     oldShape.end(), 1, std::multiplies<int>());
+    int64_t stride = llvm::product_of(oldShape.drop_front(reductionAxis + 1));
     int64_t index = indexAtOldTensor + stride * reductionAxisVal;
     reducedValue =
         OperationType::calcOneElement(reducedValue, oldTensor[index]);
@@ -374,8 +402,7 @@ struct ReduceConstantOptimization : public OpRewritePattern<OperationType> {
     auto oldShape = shapedOldElementsValues.getShape();
     auto newShape = resultType.getShape();
 
-    auto newNumOfElements = std::accumulate(newShape.begin(), newShape.end(), 1,
-                                            std::multiplies<int>());
+    int64_t newNumOfElements = llvm::product_of(newShape);
     llvm::SmallVector<APInt> newReducedTensor(newNumOfElements);
 
     for (int64_t reductionIndex = 0; reductionIndex < newNumOfElements;

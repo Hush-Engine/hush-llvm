@@ -56,6 +56,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>
+#include <deque>
 
 using namespace llvm;
 using namespace polly;
@@ -393,8 +394,7 @@ bool ScopBuilder::buildConditionSets(
     BasicBlock *BB, SwitchInst *SI, Loop *L, __isl_keep isl_set *Domain,
     DenseMap<BasicBlock *, isl::set> &InvalidDomainMap,
     SmallVectorImpl<__isl_give isl_set *> &ConditionSets) {
-  Value *Condition = getConditionFromTerminator(SI);
-  assert(Condition && "No condition for switch");
+  Value *Condition = SI->getCondition();
 
   isl_pw_aff *LHS, *RHS;
   LHS = getPwAff(BB, InvalidDomainMap, SE.getSCEVAtScope(Condition, L));
@@ -571,16 +571,12 @@ bool ScopBuilder::buildConditionSets(
     return buildConditionSets(BB, SI, L, Domain, InvalidDomainMap,
                               ConditionSets);
 
-  assert(isa<BranchInst>(TI) && "Terminator was neither branch nor switch.");
-
-  if (TI->getNumSuccessors() == 1) {
+  if (isa<UncondBrInst>(TI)) {
     ConditionSets.push_back(isl_set_copy(Domain));
     return true;
   }
 
-  Value *Condition = getConditionFromTerminator(TI);
-  assert(Condition && "No condition for Terminator");
-
+  Value *Condition = cast<CondBrInst>(TI)->getCondition();
   return buildConditionSets(BB, Condition, TI, L, Domain, InvalidDomainMap,
                             ConditionSets);
 }
@@ -636,7 +632,7 @@ void ScopBuilder::propagateDomainConstraintsToRegionExit(
   auto *RI = scop->getRegion().getRegionInfo();
   auto *BBReg = RI ? RI->getRegionFor(BB) : nullptr;
   auto *ExitBB = BBReg ? BBReg->getExit() : nullptr;
-  if (!BBReg || BBReg->getEntry() != BB || !scop->contains(ExitBB))
+  if (!BBReg || BBReg->getEntry() != BB || !ExitBB || !scop->contains(ExitBB))
     return;
 
   // Do not propagate the domain if there is a loop backedge inside the region
@@ -689,7 +685,7 @@ isl::set ScopBuilder::getPredecessorDomainConstraints(BasicBlock *BB,
 
   // Set of regions of which the entry block domain has been propagated to BB.
   // all predecessors inside any of the regions can be skipped.
-  SmallSet<Region *, 8> PropagatedRegions;
+  SmallPtrSet<Region *, 8> PropagatedRegions;
 
   for (auto *PredBB : predecessors(BB)) {
     // Skip backedges.
@@ -754,12 +750,9 @@ bool ScopBuilder::addLoopBoundsToHeaderDomain(
     isl::set BackedgeCondition;
 
     Instruction *TI = LatchBB->getTerminator();
-    BranchInst *BI = dyn_cast<BranchInst>(TI);
-    assert(BI && "Only branch instructions allowed in loop latches");
-
-    if (BI->isUnconditional())
+    if (isa<UncondBrInst>(TI))
       BackedgeCondition = LatchBBDom;
-    else {
+    else if (auto *BI = dyn_cast<CondBrInst>(TI)) {
       SmallVector<isl_set *, 8> ConditionSets;
       int idx = BI->getSuccessor(0) != HeaderBB;
       if (!buildConditionSets(LatchBB, TI, L, LatchBBDom.get(),
@@ -770,7 +763,8 @@ bool ScopBuilder::addLoopBoundsToHeaderDomain(
       isl_set_free(ConditionSets[1 - idx]);
 
       BackedgeCondition = isl::manage(ConditionSets[idx]);
-    }
+    } else
+      llvm_unreachable("Only branch instructions allowed in loop latches");
 
     int LatchLoopDepth = scop->getRelativeLoopDepth(LI.getLoopFor(LatchBB));
     assert(LatchLoopDepth >= LoopDepth);
@@ -1463,7 +1457,7 @@ bool ScopBuilder::buildAccessMultiDimFixed(MemAccInst Inst, ScopStmt *Stmt) {
     return false;
 
   SmallVector<const SCEV *, 4> Subscripts;
-  SmallVector<int, 4> Sizes;
+  SmallVector<const SCEV *, 4> Sizes;
   getIndexExpressionsFromGEP(SE, GEP, Subscripts, Sizes);
   auto *BasePtr = GEP->getOperand(0);
 
@@ -1474,8 +1468,6 @@ bool ScopBuilder::buildAccessMultiDimFixed(MemAccInst Inst, ScopStmt *Stmt) {
   // offsets that have been added before this GEP is applied.
   if (BasePtr != BasePointer->getValue())
     return false;
-
-  std::vector<const SCEV *> SizesSCEV;
 
   const InvariantLoadsSetTy &ScopRIL = scop->getRequiredInvariantLoads();
 
@@ -1494,11 +1486,9 @@ bool ScopBuilder::buildAccessMultiDimFixed(MemAccInst Inst, ScopStmt *Stmt) {
   if (Sizes.empty())
     return false;
 
+  std::vector<const SCEV *> SizesSCEV;
   SizesSCEV.push_back(nullptr);
-
-  for (auto V : Sizes)
-    SizesSCEV.push_back(SE.getSCEV(
-        ConstantInt::get(IntegerType::getInt64Ty(BasePtr->getContext()), V)));
+  SizesSCEV.insert(SizesSCEV.end(), Sizes.begin(), Sizes.end());
 
   addArrayAccess(Stmt, Inst, AccType, BasePointer->getValue(), ElementType,
                  true, Subscripts, SizesSCEV, Val);
@@ -1856,8 +1846,7 @@ static void joinOperandTree(EquivalenceClasses<Instruction *> &UnionFind,
         continue;
 
       // Check if OpInst is in the BB and is a modeled instruction.
-      auto OpVal = UnionFind.findValue(OpInst);
-      if (OpVal == UnionFind.end())
+      if (!UnionFind.contains(OpInst))
         continue;
 
       UnionFind.unionSets(Inst, OpInst);
@@ -2633,8 +2622,7 @@ void ScopBuilder::checkForReductions(ScopStmt &Stmt) {
         if (auto *Ptr = dyn_cast<Instruction>(Load->getPointerOperand())) {
           const auto &It = State.find(Ptr);
           if (It != State.end())
-            for (const auto &FlowInSetElem : It->second)
-              InvalidLoads.insert(FlowInSetElem.first);
+            InvalidLoads.insert_range(llvm::make_first_range(It->second));
         }
 
         // If this load is used outside this stmt, invalidate it.
@@ -2654,8 +2642,7 @@ void ScopBuilder::checkForReductions(ScopStmt &Stmt) {
                 dyn_cast<Instruction>(Store->getPointerOperand())) {
           const auto &It = State.find(Ptr);
           if (It != State.end())
-            for (const auto &FlowInSetElem : It->second)
-              InvalidLoads.insert(FlowInSetElem.first);
+            InvalidLoads.insert_range(llvm::make_first_range(It->second));
         }
 
         // Propagate the uses of the value operand to the store
@@ -2710,8 +2697,7 @@ void ScopBuilder::checkForReductions(ScopStmt &Stmt) {
       // If this operation is used outside the stmt, invalidate all the loads
       // which feed into it.
       if (UsedOutsideStmt)
-        for (const auto &FlowInSetElem : InstInFlowSet)
-          InvalidLoads.insert(FlowInSetElem.first);
+        InvalidLoads.insert_range(llvm::make_first_range(InstInFlowSet));
     }
   }
 
@@ -3256,6 +3242,9 @@ static bool buildMinMaxAccess(isl::set Set,
 
   Set = Set.remove_divs();
   polly::simplify(Set);
+
+  if (Set.is_null())
+    return false;
 
   if (unsignedFromIslSize(Set.n_basic_set()) > RunTimeChecksMaxAccessDisjuncts)
     Set = Set.simple_hull();

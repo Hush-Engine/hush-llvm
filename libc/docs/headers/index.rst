@@ -10,6 +10,7 @@ Implementation Status
    complex
    cpio
    ctype
+   dirent
    endian
    errno
    fenv
@@ -34,6 +35,7 @@ Implementation Status
    sys/stat
    sys/statvfs
    sys/time
+   sys/utsname
    sys/wait
    termios
    threads
@@ -42,6 +44,4 @@ Implementation Status
    unistd
    wchar
    wctype
-..
-   TODO: https://github.com/llvm/llvm-project/issues/123821
    pthread

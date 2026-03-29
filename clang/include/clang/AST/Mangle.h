@@ -40,6 +40,13 @@ struct ThisAdjustment;
 struct ThunkInfo;
 class VarDecl;
 
+/// Extract mangling function name from MangleContext such that swift can call
+/// it to prepare for ObjCDirect in swift.
+void mangleObjCMethodName(raw_ostream &OS, bool includePrefixByte,
+                          bool isInstanceMethod, StringRef ClassName,
+                          std::optional<StringRef> CategoryName,
+                          StringRef MethodName);
+
 /// MangleContext - Context for tracking state which persists across multiple
 /// calls to the C++ name mangler.
 class MangleContext {
@@ -182,8 +189,8 @@ public:
 
 class ItaniumMangleContext : public MangleContext {
 public:
-  using DiscriminatorOverrideTy =
-      std::optional<unsigned> (*)(ASTContext &, const NamedDecl *);
+  using DiscriminatorOverrideTy = UnsignedOrNone (*)(ASTContext &,
+                                                     const NamedDecl *);
   explicit ItaniumMangleContext(ASTContext &C, DiagnosticsEngine &D,
                                 bool IsAux = false)
       : MangleContext(C, D, MK_Itanium, IsAux) {}
@@ -309,6 +316,11 @@ public:
 private:
   class Implementation;
   std::unique_ptr<Implementation> Impl;
+};
+
+/// Constants used by LLDB for mangling.
+struct LLDBManglingABI {
+  static constexpr llvm::StringLiteral FunctionLabelPrefix = "$__lldb_func:";
 };
 } // namespace clang
 

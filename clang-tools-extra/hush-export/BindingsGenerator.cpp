@@ -3,6 +3,7 @@
 #include "ParserCommon.h"
 
 #include "clang/AST/Type.h"
+#include "clang/AST/TypeBase.h"
 #include "llvm/DebugInfo/PDB/PDBTypes.h"
 #include "llvm/Support/Casting.h"
 
@@ -22,7 +23,7 @@ static bool hasDestructor(const clang::QualType QT) {
 
 static bool isPOD(const clang::RecordDecl *D) {
   const auto &Context = D->getASTContext();
-  clang::QualType RecordType = Context.getRecordType(D);
+  clang::QualType RecordType = Context.getCanonicalTagType(D);
 
   // Check if the type is a POD type
   return RecordType.isPODType(Context);

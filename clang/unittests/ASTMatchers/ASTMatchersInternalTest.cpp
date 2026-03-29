@@ -198,7 +198,7 @@ TEST(AstPolymorphicMatcherPMacro, Works) {
 }
 
 TEST(MatchFinder, CheckProfiling) {
-  MatchFinderOptions Options;
+  MatchFinder::MatchFinderOptions Options;
   llvm::StringMap<llvm::TimeRecord> Records;
   Options.CheckProfiling.emplace(Records);
   MatchFinder Finder(std::move(Options));
@@ -295,6 +295,41 @@ TEST(DynTypedMatcherTest, ConstructWithTraversalKindOverridesNestedTK) {
       TK_IgnoreUnlessSpelledInSource);
   EXPECT_THAT(M.getTraversalKind(),
               llvm::ValueIs(TK_IgnoreUnlessSpelledInSource));
+}
+
+TEST(MatchFinder, AddMatcherOverloadsHonorTraversalKind) {
+  StringRef Code = R"cpp(
+    struct B {};
+    struct C : B {
+      C() {}
+    };
+  )cpp";
+
+  // C() has an implicit initializer for B.
+  auto Matcher = cxxCtorInitializer(isBaseInitializer());
+
+  {
+    bool Matched = false;
+    MatchFinder Finder;
+    struct TestCallback : public MatchFinder::MatchCallback {
+      std::optional<TraversalKind> TK;
+      bool *Matched;
+      TestCallback(std::optional<TraversalKind> TK, bool *Matched)
+          : TK(TK), Matched(Matched) {}
+      void run(const MatchFinder::MatchResult &Result) override {
+        *Matched = true;
+      }
+      std::optional<TraversalKind> getCheckTraversalKind() const override {
+        return TK;
+      }
+    } Callback(TK_IgnoreUnlessSpelledInSource, &Matched);
+    Finder.addMatcher(Matcher, &Callback);
+    std::unique_ptr<FrontendActionFactory> Factory(
+        newFrontendActionFactory(&Finder));
+    ASSERT_TRUE(tooling::runToolOnCode(Factory->create(), Code));
+    EXPECT_FALSE(Matched) << "Matcher not using specified TraversalKind, "
+                             "TK_IgnoreUnlessSpelledInSource";
+  }
 }
 
 TEST(IsInlineMatcher, IsInline) {
