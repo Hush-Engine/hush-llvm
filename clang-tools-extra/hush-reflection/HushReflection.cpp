@@ -46,6 +46,26 @@ int main(int argc, const char **argv) {
   ClangTool Tool(OptionsParser.getCompilations(),
                  OptionsParser.getSourcePathList());
 
+
+ // This is needed for msvc compatibility, I commented it out until I have a proper way to pass this as an arg to the executable from Hush's build system
+ // 
+ //  CommandLineArguments AdditionalArgs {
+ //    #ifdef _WIN64
+ //    "-D_WIN64"
+ //    #endif
+ //  };
+
+
+	// AdditionalArgs.emplace_back("-target");
+	// AdditionalArgs.emplace_back("x86_64-pc-windows-msvc");
+	// AdditionalArgs.emplace_back("-fms-compatibility");
+	// AdditionalArgs.emplace_back("-fms-extensions");
+
+ //  Tool.appendArgumentsAdjuster(getInsertArgumentAdjuster(
+ //    AdditionalArgs,
+ //    ArgumentInsertPosition::BEGIN
+ //  ));
+
   Tool.appendArgumentsAdjuster(
       getInsertArgumentAdjuster("-DHUSH_HEADER_PARSING=1",
                                 clang::tooling::ArgumentInsertPosition::BEGIN));
