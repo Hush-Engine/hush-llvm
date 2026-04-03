@@ -8337,6 +8337,7 @@ ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D, const ParsedAttr &AL,
     break;
   case ParsedAttr::AT_HushProperty:
     handleSimpleAttribute<HushPropertyAttr>(S, D, AL);
+    break;
   case ParsedAttr::AT_ModularFormat:
     handleModularFormat(S, D, AL);
     break;
