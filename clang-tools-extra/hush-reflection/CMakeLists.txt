@@ -1,19 +1,19 @@
 set(LLVM_LINK_COMPONENTS support)
 
-add_clang_executable(hush-reflection
-        HushReflection.cpp
-        HushReflectionMatcher.cpp
-        ClassField.cpp
-        ReflectedClass.cpp
-        CtorInfo.cpp
-        FunctionInfo.cpp
+add_clang_library(clangHushReflection STATIC
+  HushReflectionMatcher.cpp
+  ASTExtractor.cpp
+  ReflectionEmitter.cpp
 )
-target_link_libraries(hush-reflection
-        PRIVATE
-        clangAST
-        clangASTMatchers
-        clangBasic
-        clangFrontend
-        clangSerialization
-        clangTooling
+
+clang_target_link_libraries(clangHushReflection
+  PRIVATE
+  clangAST
+  clangASTMatchers
+  clangBasic
+  clangFrontend
+  clangSerialization
+  clangTooling
 )
+
+add_subdirectory(tool)

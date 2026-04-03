@@ -1,9 +1,15 @@
 #include "HushReflectionMatcher.h"
 
-#include "ReflectedClass.h"
+#include "ASTExtractor.h"
+#include "ReflectionEmitter.h"
 
-StringRef getRecordFilename(const clang::CXXRecordDecl *Record,
-                            const clang::SourceManager &SM) {
+// using namespace clang::tooling;
+using namespace llvm;
+using namespace clang::ast_matchers;
+
+static llvm::StringRef
+getRecordFilename(const clang::CXXRecordDecl *Record,
+                  const clang::SourceManager &SM) {
   clang::SourceLocation Loc = Record->getLocation();
   if (Loc.isInvalid()) {
     return "";
@@ -15,35 +21,31 @@ HushReflectionCallback::HushReflectionCallback(llvm::StringRef CWD)
     : CurrentWorkingDirectory(CWD) {}
 
 void HushReflectionCallback::run(const MatchFinder::MatchResult &Result) {
-  const clang::CXXRecordDecl *HushReflectionClass =
-      Result.Nodes.getNodeAs<clang::CXXRecordDecl>("id");
+  const auto *Decl = Result.Nodes.getNodeAs<clang::CXXRecordDecl>("id");
 
-  // Get header
   const clang::SourceManager *SM = Result.SourceManager;
+  StringRef Path = getRecordFilename(Decl, *SM);
 
-  // Get the path of Dir
-  StringRef Path = getRecordFilename(HushReflectionClass, *SM);
-
-  if (!Path.ends_with(".hpp")) {
+  if (!Path.ends_with(".hpp"))
     return;
-  }
 
-  if (!isFileInCurrentWorkingDirectory(Path)) {
+  if (!isFileInCurrentWorkingDirectory(Path))
     return;
-  }
 
   std::string PathStr = Path.str();
 
-  if (hasFileBeenParsed(PathStr)) {
+  if (hasFileBeenParsed(PathStr))
     return;
-  }
 
-  // For the path, replace the ".hpp" with ".hushgen.hpp"
+  // Layer 2: Extract model from AST
+  hush_reflection::ClassModel Model =
+      hush_reflection::extractClassModel(Decl);
+
+  // Layer 3: Emit code from model
   std::string OutputPath = PathStr;
   size_t Pos = OutputPath.rfind(".hpp");
   OutputPath.insert(Pos, ".hushgen");
 
-  // Write the reflection data to the file
   std::error_code EC;
   llvm::raw_fd_ostream Out(OutputPath, EC, llvm::sys::fs::OF_Text);
   if (EC) {
@@ -52,15 +54,11 @@ void HushReflectionCallback::run(const MatchFinder::MatchResult &Result) {
     return;
   }
 
-  ReflectedClass ReflectedClass(HushReflectionClass);
-
-  ReflectedClass.generateReflectionCode(Out);
-  ReflectedClass.generateSerializeCode(Out);
-  ReflectedClass.generateDeserializeCode(Out);
-
-  Out << "private:\n";
+  hush_reflection::ReflectionEmitter Emitter;
+  Emitter.emit(Model, Out);
 
   ParsedFiles.insert(PathStr);
+  ReflectedTypes.push_back({Model.QualifiedName, PathStr});
   llvm::outs() << "Generated reflection data in " << OutputPath << "\n";
 }
 
