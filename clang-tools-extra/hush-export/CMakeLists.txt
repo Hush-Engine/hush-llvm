@@ -1,11 +1,13 @@
 set(LLVM_LINK_COMPONENTS support)
 
-add_clang_executable(hush-export
-        HushExport.cpp
+add_clang_library(clangHushExport STATIC
         ParserCommon.cpp
-        BindingsGenerator.cpp
+        CodeEmitter.cpp
+        TypeRegistry.cpp
+        ExportMatcher.cpp
 )
-target_link_libraries(hush-export
+
+clang_target_link_libraries(clangHushExport
         PRIVATE
         clangAST
         clangASTMatchers
@@ -14,3 +16,5 @@ target_link_libraries(hush-export
         clangSerialization
         clangTooling
 )
+
+add_subdirectory(tool)

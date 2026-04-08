@@ -1,7 +1,6 @@
 #include "ParserCommon.h"
 
 #include <clang/AST/ASTContext.h>
-#include <clang/AST/Attr.h>
 #include <clang/AST/Decl.h>
 
 std::optional<std::string> getHushExportName(const clang::CallExpr *CallExpr,
@@ -30,12 +29,10 @@ std::optional<std::string> getHushExportName(const clang::CallExpr *CallExpr,
   return std::nullopt;
 }
 
-bool isHushExportIgnore(const clang::DeclRefExpr *CallExpr,
-                        clang::ASTContext &ASTContext) {
-  return CallExpr->getDecl()->getName() == "ignore";
+bool isHushExportIgnore(const clang::DeclRefExpr *DeclRef) {
+  return DeclRef->getDecl()->getName() == "ignore";
 }
 
-bool isHushExportHandle(const clang::DeclRefExpr *CallExpr,
-                        clang::ASTContext &ASTContext) {
-  return CallExpr->getDecl()->getName() == "asHandle";
+bool isHushExportHandle(const clang::DeclRefExpr *DeclRef) {
+  return DeclRef->getDecl()->getName() == "asHandle";
 }
