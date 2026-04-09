@@ -668,9 +668,11 @@ CParam ExportMatcher::resolveParam(const clang::FunctionDecl *D,
 
   // Record params (by value)
   if (ParamType->isRecordType()) {
+    std::string CppName;
+
     if (Res) {
       Result.type = Res->cType;
-      Result.mode = PassMode::Direct;
+      CppName = Res->cppName;
     } else {
       // Try to find via record decl name
       const auto *RD = ParamType->getAsRecordDecl();
@@ -678,25 +680,30 @@ CParam ExportMatcher::resolveParam(const clang::FunctionDecl *D,
         auto RdName = RD->getQualifiedNameAsString();
         if (auto Lookup = Registry_.lookup(RdName)) {
           Result.type = Lookup->cType;
-          Result.mode = PassMode::Direct;
-          return Result;
-        }
-
-        // Try to auto-export
-        auto Exported = ensureRegistered(RD);
-        if (Exported) {
+          CppName = RdName;
+        } else if (auto Exported = ensureRegistered(RD)) {
           Result.type = CType::makeStruct(*Exported);
+          CppName = RdName;
+        } else {
+          // Error
+          unsigned DiagID = D->getASTContext().getDiagnostics().getCustomDiagID(
+              clang::DiagnosticsEngine::Error, "Error: %0 is not exported\n");
+          D->getASTContext().getDiagnostics().Report(Param->getLocation(),
+                                                     DiagID)
+              << ParamType.getAsString();
+          Result.type = CType::makeBuiltin("/* error */");
           Result.mode = PassMode::Direct;
           return Result;
         }
       }
+    }
 
-      // Error
-      unsigned DiagID = D->getASTContext().getDiagnostics().getCustomDiagID(
-          clang::DiagnosticsEngine::Error, "Error: %0 is not exported\n");
-      D->getASTContext().getDiagnostics().Report(Param->getLocation(), DiagID)
-          << ParamType.getAsString();
-      Result.type = CType::makeBuiltin("/* error */");
+    // If the C name differs from the C++ name (e.g., glm::vec3 → Vector3),
+    // we need a reinterpret_cast to convert between the layout-compatible types.
+    if (Result.type.name != CppName) {
+      Result.mode = PassMode::Reinterpret;
+      Result.cppCastType = "const " + CppName + " &";
+    } else {
       Result.mode = PassMode::Direct;
     }
     return Result;
