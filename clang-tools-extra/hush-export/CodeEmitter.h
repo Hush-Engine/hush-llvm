@@ -24,6 +24,8 @@ private:
   void emitHeaderPostamble(llvm::raw_ostream &OS) const;
   void emitImplPreamble(llvm::raw_ostream &OS) const;
 
+  void emitTypeAlias(const CTypeAlias &Alias, llvm::raw_ostream &Header) const;
+
   void emitEnum(const CEnumDef &Enum, llvm::raw_ostream &Header) const;
 
   void emitStruct(const CStruct &Struct, llvm::raw_ostream &Header) const;

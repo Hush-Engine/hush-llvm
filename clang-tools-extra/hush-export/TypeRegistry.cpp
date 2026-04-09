@@ -7,6 +7,18 @@
 
 using namespace hush;
 
+/// Get the canonical type string with C++ tag keywords (class/struct/enum)
+/// stripped. Clang's canonical printer adds these but they break C output
+/// and C++ wrapper code.
+static std::string getCleanCanonicalName(clang::QualType Type) {
+  std::string Name = Type.getCanonicalType().getAsString();
+  for (llvm::StringRef Prefix : {"class ", "struct ", "enum "}) {
+    if (llvm::StringRef(Name).starts_with(Prefix))
+      Name.erase(0, Prefix.size());
+  }
+  return Name;
+}
+
 // ===== TypeRegistry =====
 
 void TypeRegistry::registerType(const std::string &cppName, CType cType,
@@ -60,6 +72,41 @@ std::vector<std::string> TypeRegistry::registeredTypeNames() const {
   for (const auto &Pair : types_)
     names.push_back(Pair.first);
   return names;
+}
+
+// ===== TypeAliasTranslator =====
+
+bool TypeAliasTranslator::canTranslate(clang::QualType Type,
+                                       const TypeRegistry &Registry) const {
+  // Walk the typedef chain: Scene::EntityId → Entity::EntityId → uint64_t
+  // Stop at the first registered alias.
+  clang::QualType Cur = Type;
+  while (const auto *TDT = Cur->getAs<clang::TypedefType>()) {
+    if (Registry.isRegistered(TDT->getDecl()->getQualifiedNameAsString()))
+      return true;
+    // Desugar one level and try the next typedef in the chain
+    clang::QualType Desugared = TDT->desugar();
+    if (Desugared == Cur)
+      break;
+    Cur = Desugared;
+  }
+  return false;
+}
+
+TypeResolution
+TypeAliasTranslator::translate(clang::QualType Type,
+                               const TypeRegistry &Registry) const {
+  clang::QualType Cur = Type;
+  while (const auto *TDT = Cur->getAs<clang::TypedefType>()) {
+    std::string QualName = TDT->getDecl()->getQualifiedNameAsString();
+    if (auto Res = Registry.lookup(QualName))
+      return *Res;
+    clang::QualType Desugared = TDT->desugar();
+    if (Desugared == Cur)
+      break;
+    Cur = Desugared;
+  }
+  llvm_unreachable("canTranslate should have verified a match exists");
 }
 
 // ===== BuiltinTranslator =====
@@ -138,7 +185,7 @@ TypeResolution PointerTranslator::translate(clang::QualType Type,
   if (!InnerRes) {
     // If we can't resolve the inner type, return a raw string fallback
     TypeResolution Res;
-    std::string TypeName = Type.getCanonicalType().getAsString();
+    std::string TypeName = getCleanCanonicalName(Type);
     std::string CName = TypeName;
     std::replace(CName.begin(), CName.end(), ':', '_');
     Res.cType = CType::makeBuiltin(CName); // Fallback as opaque
@@ -152,7 +199,7 @@ TypeResolution PointerTranslator::translate(clang::QualType Type,
     InnerCType.isConst = true;
 
   Res.cType = CType::makePointer(std::move(InnerCType));
-  Res.cppName = Type.getCanonicalType().getAsString();
+  Res.cppName = getCleanCanonicalName(Type);
   // Propagate enum-ness for pointer-to-enum (rare but possible)
   Res.isEnum = InnerRes->isEnum;
   Res.enumCppType = InnerRes->enumCppType;
@@ -195,7 +242,7 @@ ReferenceTranslator::translate(clang::QualType Type,
     InnerCType.isConst = true;
 
   Res.cType = CType::makePointer(std::move(InnerCType));
-  Res.cppName = Type.getCanonicalType().getAsString();
+  Res.cppName = getCleanCanonicalName(Type);
   Res.isEnum = InnerRes->isEnum;
   Res.enumCppType = InnerRes->enumCppType;
   return Res;
@@ -241,7 +288,7 @@ ContainerTranslator::translate(clang::QualType Type,
   clang::QualType ElementType =
       TST->template_arguments().front().getAsType();
 
-  std::string ElementCppType = ElementType.getCanonicalType().getAsString();
+  std::string ElementCppType = getCleanCanonicalName(ElementType);
 
   // Resolve the element type through the registry
   auto ElementRes = Registry.resolve(ElementType);
@@ -263,7 +310,7 @@ ContainerTranslator::translate(clang::QualType Type,
   // We set the cType to void as a placeholder — the function builder
   // will override it appropriately.
   Res.cType = CType::makeVoid();
-  Res.cppName = Type.getCanonicalType().getAsString();
+  Res.cppName = getCleanCanonicalName(Type);
   Res.isContainer = true;
   Res.containerElementCType = ElementCType;
   Res.containerElementCppType = ElementCppType;
@@ -306,6 +353,8 @@ std::unique_ptr<TypeRegistry> hush::createDefaultRegistry() {
   auto Registry = std::make_unique<TypeRegistry>();
 
   // Order matters: more specific translators first.
+  // 0. Type aliases (registered using/typedef names take priority over all)
+  Registry->addTranslator(std::make_unique<TypeAliasTranslator>());
   // 1. Containers (before records, since containers are also records)
   Registry->addTranslator(std::make_unique<ContainerTranslator>());
   // 2. Builtins

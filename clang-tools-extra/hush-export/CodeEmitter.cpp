@@ -9,7 +9,11 @@ void CodeEmitter::emit(const CBindingIR &IR, llvm::raw_ostream &Header,
   emitHeaderPreamble(Header);
   emitImplPreamble(Impl);
 
-  // Enums first (types may reference them)
+  // Type aliases first (other types may reference them)
+  for (const auto &Alias : IR.typeAliases)
+    emitTypeAlias(Alias, Header);
+
+  // Enums (types may reference them)
   for (const auto &Enum : IR.enums)
     emitEnum(Enum, Header);
 
@@ -29,11 +33,14 @@ void CodeEmitter::emit(const CBindingIR &IR, llvm::raw_ostream &Header,
   // Function pointer table
   emitFuncPtrTable(IR.functions, Header, Impl);
 
+  Impl << "// NOLINTEND\n";
+
   emitHeaderPostamble(Header);
 }
 
 void CodeEmitter::emitHeaderPreamble(llvm::raw_ostream &OS) const {
   OS << "#pragma once\n"
+        "// NOLINTBEGIN\n"
         "#include <stdbool.h>\n"
         "#include <stdint.h>\n\n\n"
         "#ifdef __cplusplus\n"
@@ -44,14 +51,23 @@ void CodeEmitter::emitHeaderPreamble(llvm::raw_ostream &OS) const {
 void CodeEmitter::emitHeaderPostamble(llvm::raw_ostream &OS) const {
   OS << "\n#ifdef __cplusplus\n"
         "}\n"
-        "#endif\n";
+        "#endif\n"
+        "// NOLINTEND\n";
 }
 
 void CodeEmitter::emitImplPreamble(llvm::raw_ostream &OS) const {
   OS << "// Auto-generated file\n"
-        "// DO NOT EDIT\n\n"
+        "// DO NOT EDIT\n"
+        "// NOLINTBEGIN\n\n"
         "#include \"bindings.hpp\"\n"
         "#include \"HushBindings.h\"\n\n";
+}
+
+// ---- Type aliases ----
+
+void CodeEmitter::emitTypeAlias(const CTypeAlias &Alias,
+                                llvm::raw_ostream &Header) const {
+  Header << "typedef " << Alias.declaration << ";\n";
 }
 
 // ---- Enums ----
