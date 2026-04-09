@@ -9,6 +9,16 @@ using namespace hush;
 
 // ===== Helpers =====
 
+/// Strip C++ tag keywords (class/struct/enum) that Clang's canonical printer
+/// adds to type names.
+static std::string stripTagKeywords(std::string Name) {
+  for (llvm::StringRef Prefix : {"class ", "struct ", "enum "}) {
+    if (llvm::StringRef(Name).starts_with(Prefix))
+      Name.erase(0, Prefix.size());
+  }
+  return Name;
+}
+
 std::string ExportMatcher::makeDefaultExportName(const std::string &QN) {
   std::string Name = QN;
   std::replace(Name.begin(), Name.end(), ':', '_');
@@ -83,6 +93,7 @@ static bool isPOD(const clang::RecordDecl *D) {
 
 ExportMatcher::ExportMatcher() {
   // Set up the type registry with standard translators
+  Registry_.addTranslator(std::make_unique<TypeAliasTranslator>());
   Registry_.addTranslator(std::make_unique<ContainerTranslator>());
   Registry_.addTranslator(std::make_unique<BuiltinTranslator>());
   Registry_.addTranslator(std::make_unique<EnumTranslator>());
@@ -337,11 +348,21 @@ CField ExportMatcher::resolveField(const clang::FieldDecl *Field,
     return Result;
   }
 
-  // Function pointer fields
-  if (Field->isFunctionPointerType()) {
-    std::string TypeStr = FieldType.getAsString();
+  // Check if this is a registered type alias (e.g., ComponentCtor → typedef)
+  if (const auto *TDT = FieldType->getAs<clang::TypedefType>()) {
+    if (auto AliasRes =
+            Registry_.lookup(TDT->getDecl()->getQualifiedNameAsString())) {
+      Result.type = AliasRes->cType;
+      return Result;
+    }
+  }
+
+  // Function pointer fields (raw syntax or unregistered aliases)
+  if (FieldType.getCanonicalType()->isFunctionPointerType()) {
+    std::string TypeStr = stripTagKeywords(
+        FieldType.getCanonicalType().getAsString(Ctx.getPrintingPolicy()));
     Result.type = CType::makeFuncPointer(TypeStr);
-    // Insert the field name into the decl
+    // Insert the field name into the decl: "void (*)" → "void (*name)"
     size_t CloseParen = TypeStr.find(')');
     if (CloseParen != std::string::npos)
       TypeStr.replace(CloseParen, 1, Result.name + ")");
@@ -352,7 +373,7 @@ CField ExportMatcher::resolveField(const clang::FieldDecl *Field,
   // Try the type registry
   auto Res = Registry_.resolve(FieldType);
   if (Res) {
-    Result.type = CType::makeBuiltin(Res->cType.name);
+    Result.type = Res->cType;
     return Result;
   }
 
@@ -379,8 +400,8 @@ CField ExportMatcher::resolveField(const clang::FieldDecl *Field,
   }
 
   // Fallback: use canonical type with :: → _
-  std::string CanonName =
-      FieldType.getCanonicalType().getAsString(Ctx.getLangOpts());
+  std::string CanonName = stripTagKeywords(
+      FieldType.getCanonicalType().getAsString(Ctx.getLangOpts()));
   std::replace(CanonName.begin(), CanonName.end(), ':', '_');
   Result.type = CType::makeBuiltin(CanonName);
   return Result;
@@ -405,6 +426,47 @@ void ExportMatcher::processClass(const clang::HushExportAttr *Attr,
 
   ProcessedDecls_.insert(CppName);
 
+  clang::ASTContext &Ctx = D->getASTContext();
+
+  // Extract public type aliases from all classes (including opaque handles),
+  // since aliases like EntityId may be referenced by exported functions.
+  for (const auto *Decl : D->decls()) {
+    const clang::TypedefNameDecl *TAD =
+        llvm::dyn_cast<clang::TypedefNameDecl>(Decl);
+    if (!TAD)
+      continue;
+    if (TAD->getAccess() != clang::AccessSpecifier::AS_public)
+      continue;
+
+    clang::QualType Underlying = TAD->getUnderlyingType();
+    std::string AliasName = ExportName + "_" + TAD->getName().str();
+
+    CTypeAlias Alias;
+    Alias.name = AliasName;
+
+    if (Underlying->isFunctionPointerType()) {
+      // Function pointer alias: "void (*)(void*, int32_t, const void*)"
+      // → "void (*AliasName)(void *, int32_t, const void *)"
+      std::string FPDecl = stripTagKeywords(
+          Underlying.getCanonicalType().getAsString(Ctx.getPrintingPolicy()));
+      size_t Star = FPDecl.find("(*");
+      if (Star != std::string::npos)
+        FPDecl.replace(Star + 2, 0, AliasName);
+      Alias.declaration = FPDecl;
+    } else {
+      auto Res = Registry_.resolve(Underlying);
+      if (!Res)
+        continue;
+      Alias.declaration = Res->cType.toString() + " " + AliasName;
+    }
+
+    IR_.typeAliases.push_back(Alias);
+
+    // Register so other types referencing this alias resolve correctly
+    Registry_.registerType(CppName + "::" + TAD->getName().str(),
+                           CType::makeBuiltin(AliasName));
+  }
+
   if (Opts.asHandle) {
     CStruct s;
     s.name = ExportName;
@@ -426,15 +488,14 @@ void ExportMatcher::processClass(const clang::HushExportAttr *Attr,
     if (const auto *CRD = llvm::dyn_cast<clang::CXXRecordDecl>(D)) {
       if (!CRD->hasMoveConstructor() && !CRD->hasSimpleMoveConstructor()) {
         unsigned DiagID =
-            D->getASTContext().getDiagnostics().getCustomDiagID(
+            Ctx.getDiagnostics().getCustomDiagID(
                 clang::DiagnosticsEngine::Error,
                 "when a type has a destructor, it must be move-constructible");
-        D->getASTContext().getDiagnostics().Report(D->getLocation(), DiagID);
+        Ctx.getDiagnostics().Report(D->getLocation(), DiagID);
       }
     }
   }
 
-  clang::ASTContext &Ctx = D->getASTContext();
   for (const auto *Field : D->fields())
     s.fields.push_back(resolveField(Field, Ctx));
 
@@ -480,8 +541,8 @@ ExportMatcher::resolveReturnType(const clang::FunctionDecl *D) {
     if (Res) {
       Info.cType = Res->cType;
     } else {
-      std::string TypeName = RetType.getCanonicalType().getAsString(
-          D->getASTContext().getPrintingPolicy());
+      std::string TypeName = stripTagKeywords(RetType.getCanonicalType().getAsString(
+          D->getASTContext().getPrintingPolicy()));
       std::replace(TypeName.begin(), TypeName.end(), ':', '_');
       Info.cType = CType::makeBuiltin(TypeName);
     }
@@ -498,8 +559,8 @@ ExportMatcher::resolveReturnType(const clang::FunctionDecl *D) {
     if (InnerRes) {
       Info.cType = CType::makePointer(InnerRes->cType);
     } else {
-      std::string TypeName = RetType.getCanonicalType().getAsString(
-          D->getASTContext().getPrintingPolicy());
+      std::string TypeName = stripTagKeywords(RetType.getCanonicalType().getAsString(
+          D->getASTContext().getPrintingPolicy()));
       std::replace(TypeName.begin(), TypeName.end(), ':', '_');
       std::replace(TypeName.begin(), TypeName.end(), '&', '*');
       Info.cType = CType::makeBuiltin(TypeName);
@@ -514,8 +575,8 @@ ExportMatcher::resolveReturnType(const clang::FunctionDecl *D) {
     Info.cType = Res->cType;
     CppRetTypeName = Res->cppName;
   } else {
-    std::string TypeName = RetType.getCanonicalType().getAsString(
-        D->getASTContext().getPrintingPolicy());
+    std::string TypeName = stripTagKeywords(RetType.getCanonicalType().getAsString(
+        D->getASTContext().getPrintingPolicy()));
     CppRetTypeName = TypeName;
     std::replace(TypeName.begin(), TypeName.end(), ':', '_');
     Info.cType = CType::makeBuiltin(TypeName);
@@ -570,15 +631,15 @@ CParam ExportMatcher::resolveParam(const clang::FunctionDecl *D,
         InnerCType.isConst = true;
       Result.type = CType::makePointer(InnerCType);
     } else {
-      std::string TypeName = ParamType.getCanonicalType().getAsString(
-          D->getASTContext().getLangOpts());
+      std::string TypeName = stripTagKeywords(ParamType.getCanonicalType().getAsString(
+          D->getASTContext().getLangOpts()));
       std::replace(TypeName.begin(), TypeName.end(), ':', '_');
       std::replace(TypeName.begin(), TypeName.end(), '&', '*');
       Result.type = CType::makeBuiltin(TypeName);
     }
 
-    std::string RealType = ParamType.getCanonicalType().getAsString(
-        D->getASTContext().getLangOpts());
+    std::string RealType = stripTagKeywords(ParamType.getCanonicalType().getAsString(
+        D->getASTContext().getLangOpts()));
     std::replace(RealType.begin(), RealType.end(), '&', '*');
 
     Result.mode = PassMode::DerefReinterpret;
@@ -591,14 +652,14 @@ CParam ExportMatcher::resolveParam(const clang::FunctionDecl *D,
     if (Res) {
       Result.type = Res->cType;
     } else {
-      std::string TypeName = ParamType.getCanonicalType().getAsString(
-          D->getASTContext().getLangOpts());
+      std::string TypeName = stripTagKeywords(ParamType.getCanonicalType().getAsString(
+          D->getASTContext().getLangOpts()));
       std::replace(TypeName.begin(), TypeName.end(), ':', '_');
       Result.type = CType::makeBuiltin(TypeName);
     }
 
-    std::string RealType = ParamType.getCanonicalType().getAsString(
-        D->getASTContext().getLangOpts());
+    std::string RealType = stripTagKeywords(ParamType.getCanonicalType().getAsString(
+        D->getASTContext().getLangOpts()));
 
     Result.mode = PassMode::Reinterpret;
     Result.cppCastType = RealType;
@@ -645,8 +706,8 @@ CParam ExportMatcher::resolveParam(const clang::FunctionDecl *D,
   if (Res) {
     Result.type = Res->cType;
   } else {
-    std::string TypeName = normalizeStdIntType(
-        ParamType.getCanonicalType().getAsString());
+    std::string TypeName = normalizeStdIntType(stripTagKeywords(
+        ParamType.getCanonicalType().getAsString()));
     Result.type = CType::makeBuiltin(TypeName);
   }
   Result.mode = PassMode::Direct;

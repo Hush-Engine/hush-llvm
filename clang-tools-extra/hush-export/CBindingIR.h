@@ -218,9 +218,19 @@ struct CFunction {
   std::string cppMethodName;
 };
 
+// ---- Type alias IR ----
+
+struct CTypeAlias {
+  std::string name;        // C-side alias name (for registry tracking)
+  std::string declaration; // Full typedef content between "typedef " and ";"
+                           // e.g., "uint64_t Entity_EntityId"
+                           // or "void (*CT_ComponentCtor)(void *, int32_t, const void *)"
+};
+
 // ---- Top-level IR ----
 
 struct CBindingIR {
+  std::vector<CTypeAlias> typeAliases;
   std::vector<CEnumDef> enums;
   std::vector<CStruct> structs;
   std::vector<CFunction> functions;

@@ -112,6 +112,17 @@ private:
 
 // ---- Built-in translators ----
 
+/// Handles type aliases (using X = Y;) by looking up the declaration's
+/// qualified name in the registry. Must run before other translators so
+/// registered aliases take precedence over generic translation.
+class TypeAliasTranslator : public TypeTranslator {
+public:
+  bool canTranslate(clang::QualType Type,
+                    const TypeRegistry &Registry) const override;
+  TypeResolution translate(clang::QualType Type,
+                           const TypeRegistry &Registry) const override;
+};
+
 /// Handles builtin types: int, float, bool, uint32_t, etc.
 /// Also normalizes std::uint32_t → uint32_t.
 class BuiltinTranslator : public TypeTranslator {
