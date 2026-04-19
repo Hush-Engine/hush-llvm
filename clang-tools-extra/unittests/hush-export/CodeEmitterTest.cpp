@@ -401,6 +401,40 @@ TEST(CodeEmitterTest, ReferenceParam_DerefReinterpret) {
   EXPECT_TRUE(I.contains("*reinterpret_cast<Hush::Scene*>(scene)"));
 }
 
+TEST(CodeEmitterTest, FuncPointerParam_NameInsideParens) {
+  // Regression: a function-pointer parameter must render as
+  //   void (*name)(args)
+  // not as
+  //   void (*)(args) name
+  // (which is invalid C and was the original bug in
+  //  Hush__Scene__AddComponentObserverRaw).
+  CBindingIR IR;
+  CFunction F;
+  F.name = "Subscribe";
+  F.cppName = "Hush::Subscribe";
+  F.returnType = CType::makeVoid();
+  F.returnMode = ReturnMode::Void;
+
+  CParam P;
+  P.name = "callback";
+  P.type = CType::makeFuncPointer("void (*callback)(uint64_t, void *)");
+  P.mode = PassMode::Reinterpret;
+  P.cppCastType = "void (*)(unsigned long long, void *)";
+  F.params.push_back(P);
+
+  IR.functions.push_back(F);
+
+  auto [Header, Impl] = emitIR(IR);
+  llvm::StringRef H(Header);
+  llvm::StringRef I(Impl);
+
+  EXPECT_TRUE(H.contains("void (*callback)(uint64_t, void *)"));
+  // Must NOT have the malformed form with the name appended after the type.
+  EXPECT_FALSE(H.contains("void (*)(uint64_t, void *) callback"));
+  EXPECT_TRUE(I.contains(
+      "reinterpret_cast<void (*)(unsigned long long, void *)>(callback)"));
+}
+
 TEST(CodeEmitterTest, SpanParam) {
   CBindingIR IR;
   CFunction F;
