@@ -460,6 +460,30 @@ TEST(TypeTranslatorTest, NamespacedRegisteredType) {
   EXPECT_EQ(res->cType.name, "N_Foo");
 }
 
+// ---- Function-pointer alias resolution ----
+
+TEST(TypeTranslatorTest, FunctionPointerTypedefAliasResolves) {
+  // When a typedef-alias for a function pointer is registered, resolving
+  // a parameter of that typedef returns the registered C-side name. This
+  // is what lets the "Hush_ObserverCallback_t callback" form appear in
+  // the generated header rather than "void (*)(uint64_t, void *) callback".
+  auto reg = createDefaultRegistry();
+  reg->registerType("Hush::EventCallback_t",
+                    CType::makeBuiltin("Hush_EventCallback_t"));
+
+  auto res = resolveParamFromCode(R"cpp(
+    namespace Hush {
+      using EventCallback_t = void (*)(unsigned long long, void *);
+    }
+    void target(Hush::EventCallback_t cb);
+  )cpp",
+                                  *reg);
+
+  ASSERT_TRUE(res.has_value());
+  EXPECT_EQ(res->cType.kind, CType::Builtin);
+  EXPECT_EQ(res->cType.name, "Hush_EventCallback_t");
+}
+
 // ---- createDefaultRegistry ----
 
 TEST(TypeRegistryTest, DefaultRegistryCreated) {

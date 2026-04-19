@@ -51,6 +51,129 @@ bool ExportMatcher::isContainerReturn(const TypeResolution &Res) {
   return Res.isContainer;
 }
 
+// ===== Function-pointer + typedef alias helpers =====
+
+CType ExportMatcher::buildFuncPointerCType(clang::QualType FpType,
+                                            llvm::StringRef ParamName,
+                                            clang::ASTContext &Ctx) {
+  // Walk through typedef sugar at the outer pointer level so we land on
+  // the actual function pointer. We must NOT use getCanonicalType() here:
+  // that strips typedef sugar from the inner parameter types too, which
+  // is exactly what we need to preserve so the registry can map them.
+  clang::QualType OuterType = FpType;
+  while (const auto *TDT = OuterType->getAs<clang::TypedefType>()) {
+    OuterType = TDT->desugar();
+  }
+  clang::QualType Pointee = OuterType->getPointeeType();
+  const auto *FPT = Pointee->getAs<clang::FunctionProtoType>();
+  if (!FPT) {
+    // Fallback: emit canonical string with the name inserted into "(*)".
+    std::string TypeStr = stripTagKeywords(
+        FpType.getCanonicalType().getAsString(Ctx.getPrintingPolicy()));
+    if (!ParamName.empty()) {
+      size_t CloseParen = TypeStr.find(')');
+      if (CloseParen != std::string::npos)
+        TypeStr.replace(CloseParen, 1, ParamName.str() + ")");
+    }
+    return CType::makeFuncPointer(TypeStr);
+  }
+
+  // Resolve a single sub-type (return or parameter) through the registry,
+  // falling back to the canonical name when no translator claims it.
+  // Trigger lazy alias discovery first so class-scope typedefs that haven't
+  // been visited yet (e.g., a callback referencing Entity::EntityId before
+  // the Entity class is matched) get registered before we resolve.
+  auto resolveSubType = [&](clang::QualType T) -> std::string {
+    if (T->isVoidType())
+      return "void";
+    ensureTypedefAliasRegistered(T, Ctx);
+    if (auto Res = Registry_.resolve(T))
+      return Res->cType.toString();
+    std::string S = stripTagKeywords(
+        T.getCanonicalType().getAsString(Ctx.getPrintingPolicy()));
+    std::replace(S.begin(), S.end(), ':', '_');
+    return S;
+  };
+
+  std::string RetStr = resolveSubType(FPT->getReturnType());
+
+  std::string ParamsStr;
+  bool First = true;
+  for (clang::QualType ArgType : FPT->param_types()) {
+    if (!First)
+      ParamsStr += ", ";
+    First = false;
+    ParamsStr += resolveSubType(ArgType);
+  }
+  if (First)
+    ParamsStr = "void";
+
+  std::string Decl =
+      RetStr + " (*" + ParamName.str() + ")(" + ParamsStr + ")";
+  return CType::makeFuncPointer(Decl);
+}
+
+void ExportMatcher::addTypeAlias(const clang::TypedefNameDecl *TAD,
+                                  const std::string &CName,
+                                  clang::ASTContext &Ctx) {
+  std::string CppName = TAD->getQualifiedNameAsString();
+  if (Registry_.isRegistered(CppName))
+    return;
+
+  clang::QualType Underlying = TAD->getUnderlyingType();
+  CTypeAlias Alias;
+  Alias.name = CName;
+
+  if (Underlying->isFunctionPointerType()) {
+    CType FP = buildFuncPointerCType(Underlying, CName, Ctx);
+    Alias.declaration = FP.funcPointerDecl;
+  } else {
+    auto Res = Registry_.resolve(Underlying);
+    if (!Res || Res->isContainer)
+      return;
+    Alias.declaration = Res->cType.toString() + " " + CName;
+  }
+
+  IR_.typeAliases.push_back(Alias);
+  Registry_.registerType(CppName, CType::makeBuiltin(CName));
+}
+
+void ExportMatcher::ensureTypedefAliasRegistered(clang::QualType Type,
+                                                  clang::ASTContext &Ctx) {
+  // Walk the typedef chain. Two paths:
+  //  - Class-scope typedef (e.g., Entity::EntityId): trigger processClass
+  //    on the containing record so the typedef's owning class registers
+  //    it alongside its other typedefs.
+  //  - Namespace-scope typedef (e.g., ObserverCallback_t): emit it
+  //    directly via addTypeAlias.
+  // Function-pointer typedefs whose inner parameter types reference
+  // class-scope typedefs need both passes — that's why we walk the chain.
+  clang::QualType Cur = Type;
+  while (const auto *TDT = Cur->getAs<clang::TypedefType>()) {
+    const clang::TypedefNameDecl *TAD = TDT->getDecl();
+    if (Registry_.isRegistered(TAD->getQualifiedNameAsString()))
+      return;
+
+    const clang::DeclContext *DC = TAD->getDeclContext();
+    if (DC->isRecord()) {
+      if (const auto *RD = llvm::dyn_cast<clang::RecordDecl>(DC))
+        ensureRegistered(RD);
+      if (Registry_.isRegistered(TAD->getQualifiedNameAsString()))
+        return;
+    } else if ((DC->isNamespace() || DC->isTranslationUnit()) &&
+               !Ctx.getSourceManager().isInSystemHeader(TAD->getLocation())) {
+      std::string CName = makeDefaultExportName(TAD->getQualifiedNameAsString());
+      addTypeAlias(TAD, CName, Ctx);
+      return;
+    }
+
+    clang::QualType Desugared = TDT->desugar();
+    if (Desugared == Cur)
+      break;
+    Cur = Desugared;
+  }
+}
+
 // ===== Attribute parsing =====
 
 ExportAttrOptions ExportMatcher::parseExportAttr(
@@ -359,14 +482,9 @@ CField ExportMatcher::resolveField(const clang::FieldDecl *Field,
 
   // Function pointer fields (raw syntax or unregistered aliases)
   if (FieldType.getCanonicalType()->isFunctionPointerType()) {
-    std::string TypeStr = stripTagKeywords(
-        FieldType.getCanonicalType().getAsString(Ctx.getPrintingPolicy()));
-    Result.type = CType::makeFuncPointer(TypeStr);
-    // Insert the field name into the decl: "void (*)" → "void (*name)"
-    size_t CloseParen = TypeStr.find(')');
-    if (CloseParen != std::string::npos)
-      TypeStr.replace(CloseParen, 1, Result.name + ")");
-    Result.funcPointerDeclWithName = TypeStr;
+    Result.type = buildFuncPointerCType(FieldType, /*ParamName=*/"", Ctx);
+    Result.funcPointerDeclWithName =
+        buildFuncPointerCType(FieldType, Result.name, Ctx).funcPointerDecl;
     return Result;
   }
 
@@ -438,33 +556,8 @@ void ExportMatcher::processClass(const clang::HushExportAttr *Attr,
     if (TAD->getAccess() != clang::AccessSpecifier::AS_public)
       continue;
 
-    clang::QualType Underlying = TAD->getUnderlyingType();
     std::string AliasName = ExportName + "_" + TAD->getName().str();
-
-    CTypeAlias Alias;
-    Alias.name = AliasName;
-
-    if (Underlying->isFunctionPointerType()) {
-      // Function pointer alias: "void (*)(void*, int32_t, const void*)"
-      // → "void (*AliasName)(void *, int32_t, const void *)"
-      std::string FPDecl = stripTagKeywords(
-          Underlying.getCanonicalType().getAsString(Ctx.getPrintingPolicy()));
-      size_t Star = FPDecl.find("(*");
-      if (Star != std::string::npos)
-        FPDecl.replace(Star + 2, 0, AliasName);
-      Alias.declaration = FPDecl;
-    } else {
-      auto Res = Registry_.resolve(Underlying);
-      if (!Res)
-        continue;
-      Alias.declaration = Res->cType.toString() + " " + AliasName;
-    }
-
-    IR_.typeAliases.push_back(Alias);
-
-    // Register so other types referencing this alias resolve correctly
-    Registry_.registerType(CppName + "::" + TAD->getName().str(),
-                           CType::makeBuiltin(AliasName));
+    addTypeAlias(TAD, AliasName, Ctx);
   }
 
   if (Opts.asHandle) {
@@ -517,6 +610,8 @@ ExportMatcher::resolveReturnType(const clang::FunctionDecl *D) {
     return Info;
   }
 
+  ensureTypedefAliasRegistered(RetType, D->getASTContext());
+
   auto Res = Registry_.resolve(RetType);
 
   // Container return → callback
@@ -532,6 +627,26 @@ ExportMatcher::resolveReturnType(const clang::FunctionDecl *D) {
   if (Res && Res->isEnum) {
     Info.cType = Res->cType;
     Info.mode = ReturnMode::StaticCastEnum;
+    return Info;
+  }
+
+  // Function-pointer return. Same rationale as the parameter case: we need
+  // a name-less function-pointer declaration with inner types resolved
+  // through the registry, not the canonical desugared string.
+  if (RetType.getCanonicalType()->isFunctionPointerType()) {
+    bool UsedAlias = false;
+    if (const auto *TDT = RetType->getAs<clang::TypedefType>()) {
+      if (auto AliasRes = Registry_.lookup(
+              TDT->getDecl()->getQualifiedNameAsString())) {
+        Info.cType = AliasRes->cType;
+        UsedAlias = true;
+      }
+    }
+    if (!UsedAlias) {
+      Info.cType = buildFuncPointerCType(RetType, /*ParamName=*/"",
+                                         D->getASTContext());
+    }
+    Info.mode = ReturnMode::ReinterpretPtr;
     return Info;
   }
 
@@ -599,6 +714,11 @@ CParam ExportMatcher::resolveParam(const clang::FunctionDecl *D,
   Result.name = Param->getNameAsString();
   clang::QualType ParamType = Param->getType();
 
+  // If the parameter is a namespace-scope typedef (e.g., ObserverCallback_t),
+  // make sure it's emitted as its own typedef and registered before we
+  // resolve, so the alias name flows through instead of the desugared form.
+  ensureTypedefAliasRegistered(ParamType, D->getASTContext());
+
   auto Res = Registry_.resolve(ParamType);
 
   // Container params (span, string_view) → split into data+size
@@ -644,6 +764,31 @@ CParam ExportMatcher::resolveParam(const clang::FunctionDecl *D,
 
     Result.mode = PassMode::DerefReinterpret;
     Result.cppCastType = RealType;
+    return Result;
+  }
+
+  // Function-pointer params. Distinct from generic pointers so we can
+  // (a) embed the parameter name inside "(*name)(...)" instead of
+  //     appending it after the type (which is malformed C), and
+  // (b) recursively resolve the inner return/parameter types through
+  //     the registry, so typedefs like Entity::EntityId stay as
+  //     Hush_Entity_EntityId rather than desugaring to unsigned long long.
+  if (ParamType.getCanonicalType()->isFunctionPointerType()) {
+    bool UsedAlias = false;
+    if (const auto *TDT = ParamType->getAs<clang::TypedefType>()) {
+      if (auto AliasRes = Registry_.lookup(
+              TDT->getDecl()->getQualifiedNameAsString())) {
+        Result.type = AliasRes->cType;
+        UsedAlias = true;
+      }
+    }
+    if (!UsedAlias) {
+      Result.type = buildFuncPointerCType(ParamType, Result.name,
+                                          D->getASTContext());
+    }
+    Result.mode = PassMode::Reinterpret;
+    Result.cppCastType = stripTagKeywords(ParamType.getCanonicalType().getAsString(
+        D->getASTContext().getLangOpts()));
     return Result;
   }
 
