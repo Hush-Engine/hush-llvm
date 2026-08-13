@@ -218,6 +218,8 @@ ExportMatcher::ExportMatcher() {
   // Set up the type registry with standard translators
   Registry_.addTranslator(std::make_unique<TypeAliasTranslator>());
   Registry_.addTranslator(std::make_unique<ContainerTranslator>());
+  Registry_.addTranslator(std::make_unique<ZStringViewTranslator>());
+  Registry_.addTranslator(std::make_unique<ResultTranslator>());
   Registry_.addTranslator(std::make_unique<BuiltinTranslator>());
   Registry_.addTranslator(std::make_unique<EnumTranslator>());
   Registry_.addTranslator(std::make_unique<ReferenceTranslator>());
@@ -401,6 +403,36 @@ ExportMatcher::ensureRegistered(const clang::RecordDecl *RD) {
     return Res->cType.name;
 
   return std::nullopt;
+}
+
+bool ExportMatcher::ensureEnumExported(clang::QualType EnumType,
+                                       clang::SourceLocation Loc) {
+  const auto *ET = EnumType->getAs<clang::EnumType>();
+  if (!ET)
+    return true; // Not an enum, nothing to check.
+
+  const clang::EnumDecl *ED = ET->getDecl();
+  std::string CppName = ED->getQualifiedNameAsString();
+
+  // Already processed and emitted.
+  if (Registry_.isRegistered(CppName))
+    return true;
+
+  // Annotated but not visited by the matcher yet. This happens when a
+  // nested enum is traversed after the function that uses it. Process it
+  // now. processEnum dedups via ProcessedDecls_.
+  if (auto *Attr = ED->getAttr<clang::HushExportAttr>()) {
+    processEnum(Attr, ED);
+    if (Registry_.isRegistered(CppName))
+      return true;
+    // Otherwise it was [[hush::export(ignore)]]. Treat as not exported.
+  }
+
+  unsigned DiagID = ED->getASTContext().getDiagnostics().getCustomDiagID(
+      clang::DiagnosticsEngine::Error,
+      "enum %0 is not exported, cannot be used as a public-interface type");
+  ED->getASTContext().getDiagnostics().Report(Loc, DiagID) << CppName;
+  return false;
 }
 
 // Field options parsed from [[hush_export(...)]] on a field.
@@ -623,8 +655,58 @@ ExportMatcher::resolveReturnType(const clang::FunctionDecl *D) {
     return Info;
   }
 
+  // Result<T, E> return. outcome_v2::unchecked has no stable C layout,
+  // so it becomes a bool status plus (T* outValue, E* outError)
+  // out-parameters.
+  if (Res && Res->isResult) {
+    clang::DiagnosticsEngine &Diags = D->getASTContext().getDiagnostics();
+
+    // T and E are public-interface types. Enums there must be exported.
+    if (auto ResultArgs = getResultTypeArgs(RetType)) {
+      if (!ResultArgs->first->isVoidType())
+        ensureEnumExported(ResultArgs->first, D->getLocation());
+      ensureEnumExported(ResultArgs->second, D->getLocation());
+    }
+
+    // Validate the value type (nothing to validate for Result<void, E>).
+    if (!Res->resultValueCppType.empty()) {
+      bool ValueSupported =
+          Res->resultValueCType.kind == CType::Builtin ||
+          Res->resultValueCType.kind == CType::Enum ||
+          Res->resultValueCType.kind == CType::Struct ||
+          Res->resultValueCType.kind == CType::Pointer;
+      if (!ValueSupported) {
+        unsigned DiagID = Diags.getCustomDiagID(
+            clang::DiagnosticsEngine::Error,
+            "Error: Result value type %0 is not supported in exported "
+            "bindings\n");
+        Diags.Report(D->getLocation(), DiagID) << Res->resultValueCppType;
+      }
+    }
+
+    // Validate the error type: must be an enum or a builtin.
+    bool ErrorSupported = Res->resultErrorCType.kind == CType::Builtin ||
+                          Res->resultErrorCType.kind == CType::Enum;
+    if (!ErrorSupported) {
+      unsigned DiagID = Diags.getCustomDiagID(
+          clang::DiagnosticsEngine::Error,
+          "Error: Result error type %0 is not supported in exported "
+          "bindings\n");
+      Diags.Report(D->getLocation(), DiagID) << Res->resultErrorCppType;
+    }
+
+    Info.cType = CType::makeBuiltin("bool");
+    Info.mode = ReturnMode::ResultOutParams;
+    Info.resultValueCType = Res->resultValueCType;
+    Info.resultErrorCType = Res->resultErrorCType;
+    Info.resultValueIsEnum = Res->resultValueIsEnum;
+    Info.resultErrorIsEnum = Res->resultErrorIsEnum;
+    return Info;
+  }
+
   // Enum return
   if (Res && Res->isEnum) {
+    ensureEnumExported(RetType, D->getLocation());
     Info.cType = Res->cType;
     Info.mode = ReturnMode::StaticCastEnum;
     return Info;
@@ -724,7 +806,9 @@ CParam ExportMatcher::resolveParam(const clang::FunctionDecl *D,
   // Container params (span, string_view) → split into data+size
   if (Res && Res->isContainer) {
     Result.isSpanParts = true;
-    Result.mode = PassMode::SpanFromParts;
+    Result.mode = Res->isNullTerminatedStringView
+                      ? PassMode::ZStringFromParts
+                      : PassMode::SpanFromParts;
     Result.type = CType::makeBuiltin(
         normalizeStdIntType(Res->containerElementCType.name));
     Result.cppContainerType = Res->containerCppType;
@@ -732,8 +816,21 @@ CParam ExportMatcher::resolveParam(const clang::FunctionDecl *D,
     return Result;
   }
 
+  // Result<T, E> is only supported as a return type
+  if (Res && Res->isResult) {
+    unsigned DiagID = D->getASTContext().getDiagnostics().getCustomDiagID(
+        clang::DiagnosticsEngine::Error,
+        "Error: Result<T, E> is only supported as a return type in "
+        "exported bindings\n");
+    D->getASTContext().getDiagnostics().Report(Param->getLocation(), DiagID);
+    Result.type = CType::makeBuiltin("/* error */");
+    Result.mode = PassMode::Direct;
+    return Result;
+  }
+
   // Enum params
   if (Res && Res->isEnum) {
+    ensureEnumExported(ParamType, Param->getLocation());
     Result.type = Res->cType;
     Result.mode = PassMode::StaticCastEnum;
     Result.cppCastType = Res->enumCppType;
@@ -928,6 +1025,10 @@ void ExportMatcher::processFunction(const clang::HushExportAttr *Attr,
   Func.returnMode = RetInfo.mode;
   Func.callbackInnerType = RetInfo.callbackInnerType;
   Func.cppReturnType = RetInfo.cppReturnType;
+  Func.resultValueCType = RetInfo.resultValueCType;
+  Func.resultErrorCType = RetInfo.resultErrorCType;
+  Func.resultValueIsEnum = RetInfo.resultValueIsEnum;
+  Func.resultErrorIsEnum = RetInfo.resultErrorIsEnum;
 
   // Parameters
   for (const auto *Param : D->parameters())

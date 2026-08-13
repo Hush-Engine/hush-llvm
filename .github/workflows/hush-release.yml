@@ -1,0 +1,40 @@
+name: Hush Release Binaries
+
+# Builds the Hush binding/reflection tools (hush-export, hush-reflection)
+# and attaches the Windows x64 binaries to the GitHub release that
+# triggered this workflow.
+#
+# This workflow runs only when a release is published. It never runs on
+# push or pull requests.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-x64:
+    runs-on: windows-latest
+    steps:
+      # On release events, actions/checkout checks out the release tag.
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup CMake and Ninja
+        uses: lukka/get-cmake@latest
+
+      - name: Configure LLVM
+        run: cmake -S llvm -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLVM_ENABLE_PROJECTS="clang;clang-tools-extra" -DLLVM_TARGETS_TO_BUILD=X86 -DLLVM_INCLUDE_TESTS=OFF -DLLVM_INCLUDE_EXAMPLES=OFF -DLLVM_INCLUDE_BENCHMARKS=OFF -DLLVM_ENABLE_ASSERTIONS=OFF
+
+      - name: Build Hush tools
+        run: cmake --build build --target hush-export hush-reflection
+
+      - name: Package binaries
+        run: Compress-Archive -Path build\bin\hush-export.exe, build\bin\hush-reflection.exe -DestinationPath hush-tools-windows-x64.zip
+
+      - name: Upload binaries to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.event.release.tag_name }}" hush-tools-windows-x64.zip --clobber
