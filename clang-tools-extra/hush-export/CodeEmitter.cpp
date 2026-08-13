@@ -167,6 +167,20 @@ std::string CodeEmitter::buildSignature(const CFunction &Func) const {
     }
   }
 
+  // Result<T, E> return: add out-parameters for the value and the error.
+  if (Func.returnMode == ReturnMode::ResultOutParams) {
+    if (Func.resultValueCType.kind != CType::Void) {
+      if (!First)
+        OS << ", ";
+      First = false;
+      OS << Func.resultValueCType.toString() << " *outValue";
+    }
+    if (!First)
+      OS << ", ";
+    First = false;
+    OS << Func.resultErrorCType.toString() << " *outError";
+  }
+
   if (First) {
     // No parameters at all
     OS << "void";
@@ -203,6 +217,14 @@ void CodeEmitter::emitWrapperBody(const CFunction &Func,
       OS << "\tauto " << Param.name << "Data__ = " << Param.cppContainerType
          << "(reinterpret_cast<" << Param.cppInnerRealType << "*>("
          << Param.name << "Data), " << Param.name << "Size);\n";
+    } else if (Param.mode == PassMode::ZStringFromParts) {
+      // The (data, size) constructor is private, so build through
+      // promise_null_terminated(). Managed strings are marshaled
+      // null-terminated, so the invariant holds.
+      OS << "\tauto " << Param.name << "Data__ = " << Param.cppContainerType
+         << "::promise_null_terminated(std::string_view(reinterpret_cast<"
+         << Param.cppInnerRealType << "*>(" << Param.name << "Data), "
+         << Param.name << "Size));\n";
     }
   }
 
@@ -244,6 +266,7 @@ void CodeEmitter::emitWrapperBody(const CFunction &Func,
          << ")";
       break;
     case PassMode::SpanFromParts:
+    case PassMode::ZStringFromParts:
       OS << Param.name << "Data__";
       break;
     }
@@ -283,6 +306,41 @@ void CodeEmitter::emitWrapperBody(const CFunction &Func,
     OS << "\treturn static_cast<" << Func.returnType.toString()
        << ">(result______);\n";
     break;
+  case ReturnMode::ResultOutParams: {
+    // Return true with *outValue on success, false with *outError on error.
+    OS << "\tif (result______.has_value())\n\t{\n";
+    if (Func.resultValueCType.kind != CType::Void) {
+      OS << "\t\tif (outValue != nullptr)\n\t\t{\n";
+      OS << "\t\t\t*outValue = ";
+      if (Func.resultValueIsEnum) {
+        OS << "static_cast<" << Func.resultValueCType.toString()
+           << ">(result______.value())";
+      } else if (Func.resultValueCType.kind == CType::Struct) {
+        // The C struct is layout-compatible with the C++ type (glm types).
+        // A reinterpret copy is enough.
+        OS << "*reinterpret_cast<" << Func.resultValueCType.toString()
+           << "*>(&result______.value())";
+      } else if (Func.resultValueCType.kind == CType::Pointer) {
+        OS << "reinterpret_cast<" << Func.resultValueCType.toString()
+           << ">(result______.value())";
+      } else {
+        OS << "result______.value()";
+      }
+      OS << ";\n\t\t}\n";
+    }
+    OS << "\t\treturn true;\n\t}\n";
+    OS << "\tif (outError != nullptr)\n\t{\n";
+    OS << "\t\t*outError = ";
+    if (Func.resultErrorIsEnum) {
+      OS << "static_cast<" << Func.resultErrorCType.toString()
+         << ">(result______.error())";
+    } else {
+      OS << "result______.error()";
+    }
+    OS << ";\n\t}\n";
+    OS << "\treturn false;\n";
+    break;
+  }
   }
 }
 
@@ -328,6 +386,19 @@ void CodeEmitter::emitFuncPtrTable(const std::vector<CFunction> &Funcs,
       } else {
         Header << Param.type.toString();
       }
+    }
+
+    if (Func.returnMode == ReturnMode::ResultOutParams) {
+      if (Func.resultValueCType.kind != CType::Void) {
+        if (!First)
+          Header << ", ";
+        First = false;
+        Header << Func.resultValueCType.toString() << "*";
+      }
+      if (!First)
+        Header << ", ";
+      First = false;
+      Header << Func.resultErrorCType.toString() << "*";
     }
 
     if (First)

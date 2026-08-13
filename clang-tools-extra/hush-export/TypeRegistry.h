@@ -54,6 +54,29 @@ struct TypeResolution {
 
   /// For enums: the C++ enum type for static_cast.
   std::string enumCppType;
+
+  /// True for Hush::NullTerminatedStringView. It marshals like
+  /// std::string_view, but its (data, size) constructor is private.
+  /// The call site must build it through promise_null_terminated().
+  bool isNullTerminatedStringView = false;
+
+  /// True for Hush::Result<T, E>. Only valid as a return type.
+  /// outcome has no stable C ABI, so the C function returns a bool
+  /// status and passes T and E through out-parameters.
+  bool isResult = false;
+
+  /// For Result: the C types of T and E. resultValueCType is Void for
+  /// Result<void, E>.
+  CType resultValueCType = CType::makeVoid();
+  CType resultErrorCType = CType::makeVoid();
+
+  /// For Result: whether T / E are enums needing static_cast.
+  bool resultValueIsEnum = false;
+  bool resultErrorIsEnum = false;
+
+  /// For Result: the C++ names of T and E (for diagnostics).
+  std::string resultValueCppType;
+  std::string resultErrorCppType;
 };
 
 /// Abstract interface for type translators.
@@ -172,6 +195,38 @@ public:
   TypeResolution translate(clang::QualType Type,
                            const TypeRegistry &Registry) const override;
 };
+
+/// Handles Hush::NullTerminatedStringView (a.k.a. zstring_view).
+/// It crosses the C boundary like std::string_view: (const char*, size_t).
+/// Its (data, size) constructor is private, so the call site builds it
+/// through promise_null_terminated().
+/// Matched by name, so the type does not need [[hush::export]].
+class ZStringViewTranslator : public TypeTranslator {
+public:
+  bool canTranslate(clang::QualType Type,
+                    const TypeRegistry &Registry) const override;
+  TypeResolution translate(clang::QualType Type,
+                           const TypeRegistry &Registry) const override;
+};
+
+/// Handles Hush::Result<T, E> (alias of outcome_v2::unchecked<T, E>).
+/// Only valid as a function return type. outcome has no stable C layout,
+/// so the C function returns a bool status and takes (T* outValue,
+/// E* outError) out-parameters.
+class ResultTranslator : public TypeTranslator {
+public:
+  bool canTranslate(clang::QualType Type,
+                    const TypeRegistry &Registry) const override;
+  TypeResolution translate(clang::QualType Type,
+                           const TypeRegistry &Registry) const override;
+};
+
+/// Returns the (T, E) arguments if Type resolves to
+/// outcome_v2::basic_result. Works through alias chains like Hush::Result
+/// or a nested `using Result<T> = Hush::Result<T, EError>;`.
+/// Otherwise returns nullopt.
+std::optional<std::pair<clang::QualType, clang::QualType>>
+getResultTypeArgs(clang::QualType Type);
 
 /// Handles record types (classes/structs) by looking them up in the
 /// registry's known types. If found, maps to the registered C type.

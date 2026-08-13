@@ -61,6 +61,12 @@ private:
     ReturnMode mode;
     std::string callbackInnerType; // For Callback mode
     std::string cppReturnType;     // For PlacementNew mode
+
+    // For ResultOutParams mode (Result<T, E> return)
+    CType resultValueCType = CType::makeVoid();
+    CType resultErrorCType = CType::makeVoid();
+    bool resultValueIsEnum = false;
+    bool resultErrorIsEnum = false;
   };
   ReturnInfo resolveReturnType(const clang::FunctionDecl *D);
 
@@ -75,6 +81,12 @@ private:
   /// Ensure a record type is registered. If it has [[hush_export]],
   /// process it on the fly. Returns the C-side name, or nullopt on failure.
   std::optional<std::string> ensureRegistered(const clang::RecordDecl *RD);
+
+  /// Check that an enum used in a public interface (parameter, return
+  /// type, or Result<T, E> argument) is exported. An annotated enum that
+  /// the matcher has not visited yet is processed on the spot. Anything
+  /// else gets an error at Loc and false is returned.
+  bool ensureEnumExported(clang::QualType EnumType, clang::SourceLocation Loc);
 
   /// Build a CType::FuncPointer whose return type and parameter types are
   /// resolved through the TypeRegistry. The C identifier ParamName is

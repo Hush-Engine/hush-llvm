@@ -158,6 +158,9 @@ enum class PassMode {
   StaticCastEnum,  // static_cast<cppEnumType>(param)
   DerefReinterpret,// *reinterpret_cast<cppType>(param) (for ref params)
   SpanFromParts,   // Construct span/string_view from (data, size) pair
+  ZStringFromParts,// Like SpanFromParts, but for NullTerminatedStringView.
+                   // Its (data, size) constructor is private, so the call
+                   // site must use promise_null_terminated().
 };
 
 struct CParam {
@@ -190,6 +193,7 @@ enum class ReturnMode {
   ReinterpretPtr,  // return reinterpret_cast<CType>(result);
   DerefReinterpret,// return *reinterpret_cast<CType*>(&result);
   StaticCastEnum,  // return static_cast<CEnumType>(result);
+  ResultOutParams, // Result<T, E>: return bool status, T/E via out-params
 };
 
 struct CFunction {
@@ -205,6 +209,14 @@ struct CFunction {
 
   // For ReturnMode::PlacementNew/DerefReinterpret — the C++ return type
   std::string cppReturnType;
+
+  // For ReturnMode::ResultOutParams: the C types of T and E.
+  // resultValueCType is Void for Result<void, E>. No outValue parameter
+  // is emitted then.
+  CType resultValueCType = CType::makeVoid();
+  CType resultErrorCType = CType::makeVoid();
+  bool resultValueIsEnum = false;
+  bool resultErrorIsEnum = false;
 
   std::vector<CParam> params;
 

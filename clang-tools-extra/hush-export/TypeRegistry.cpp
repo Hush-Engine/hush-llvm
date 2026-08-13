@@ -319,6 +319,107 @@ ContainerTranslator::translate(clang::QualType Type,
   return Res;
 }
 
+// ===== ZStringViewTranslator =====
+
+/// The fully qualified name of the engine's null-terminated string view.
+static constexpr llvm::StringRef ZStringViewCppName =
+    "Hush::NullTerminatedStringView";
+
+bool ZStringViewTranslator::canTranslate(clang::QualType Type,
+                                         const TypeRegistry &) const {
+  // NullTerminatedStringView is a plain (non-template) record. Matching on
+  // the record decl name also catches aliases such as `zstring_view`,
+  // since getAsRecordDecl() looks through typedef sugar.
+  const clang::RecordDecl *RD = Type->getAsRecordDecl();
+  return RD && RD->getQualifiedNameAsString() == ZStringViewCppName;
+}
+
+TypeResolution
+ZStringViewTranslator::translate(clang::QualType Type,
+                                 const TypeRegistry &) const {
+  TypeResolution Res;
+  // Same placeholder convention as ContainerTranslator. The function
+  // builder expands this into (const char* data, size_t size) params.
+  Res.cType = CType::makeVoid();
+  Res.cppName = ZStringViewCppName.str();
+  Res.isContainer = true;
+  Res.isNullTerminatedStringView = true;
+  Res.containerElementCType = CType::makeBuiltin("const char");
+  Res.containerElementCppType = "const char";
+  Res.containerCppType = ZStringViewCppName.str();
+  return Res;
+}
+
+// ===== ResultTranslator =====
+
+/// Match Type against outcome's basic_result. We match the canonical decl
+/// instead of the written sugar so nested aliases like
+/// `using Result<T> = Hush::Result<T, EError>;` are caught too.
+static const clang::ClassTemplateSpecializationDecl *
+getAsResultSpecialization(clang::QualType Type) {
+  // getAsCXXRecordDecl() looks through typedef/alias sugar.
+  const auto *CTSD = llvm::dyn_cast_or_null<clang::ClassTemplateSpecializationDecl>(
+      Type->getAsCXXRecordDecl());
+  if (!CTSD || CTSD->getName() != "basic_result")
+    return nullptr;
+  // The namespace is versioned (outcome_v2_<commit>). Match the prefix.
+  const auto *NS =
+      llvm::dyn_cast<clang::NamespaceDecl>(CTSD->getDeclContext());
+  if (!NS || !NS->getName().starts_with("outcome_v2"))
+    return nullptr;
+  return CTSD;
+}
+
+std::optional<std::pair<clang::QualType, clang::QualType>>
+hush::getResultTypeArgs(clang::QualType Type) {
+  const auto *CTSD = getAsResultSpecialization(Type);
+  if (!CTSD)
+    return std::nullopt;
+  const auto &Args = CTSD->getTemplateArgs();
+  // basic_result<T, E, NoValuePolicy>. (T, E) are always the first two.
+  if (Args.size() < 2 || Args[0].getKind() != clang::TemplateArgument::Type ||
+      Args[1].getKind() != clang::TemplateArgument::Type)
+    return std::nullopt;
+  return std::make_pair(Args[0].getAsType(), Args[1].getAsType());
+}
+
+bool ResultTranslator::canTranslate(clang::QualType Type,
+                                    const TypeRegistry &) const {
+  return getAsResultSpecialization(Type) != nullptr;
+}
+
+TypeResolution ResultTranslator::translate(clang::QualType Type,
+                                           const TypeRegistry &Registry) const {
+  auto ResultArgs = hush::getResultTypeArgs(Type);
+  assert(ResultArgs && "canTranslate should have verified this");
+
+  TypeResolution Res;
+  // The C function returns the bool status. Value and error go through
+  // out-parameters.
+  Res.cType = CType::makeBuiltin("bool");
+  Res.cppName = getCleanCanonicalName(Type);
+  Res.isResult = true;
+
+  clang::QualType ValueType = ResultArgs->first;
+  clang::QualType ErrorType = ResultArgs->second;
+
+  if (!ValueType->isVoidType()) {
+    if (auto ValueRes = Registry.resolve(ValueType)) {
+      Res.resultValueCType = ValueRes->cType;
+      Res.resultValueIsEnum = ValueRes->isEnum;
+    }
+    Res.resultValueCppType = getCleanCanonicalName(ValueType);
+  }
+
+  if (auto ErrorRes = Registry.resolve(ErrorType)) {
+    Res.resultErrorCType = ErrorRes->cType;
+    Res.resultErrorIsEnum = ErrorRes->isEnum;
+  }
+  Res.resultErrorCppType = getCleanCanonicalName(ErrorType);
+
+  return Res;
+}
+
 // ===== RecordTranslator =====
 
 bool RecordTranslator::canTranslate(clang::QualType Type,
@@ -357,6 +458,10 @@ std::unique_ptr<TypeRegistry> hush::createDefaultRegistry() {
   Registry->addTranslator(std::make_unique<TypeAliasTranslator>());
   // 1. Containers (before records, since containers are also records)
   Registry->addTranslator(std::make_unique<ContainerTranslator>());
+  // 1a. NullTerminatedStringView (non-template record, container-like)
+  Registry->addTranslator(std::make_unique<ZStringViewTranslator>());
+  // 1b. Result<T, E> (template record, return-type-only expansion)
+  Registry->addTranslator(std::make_unique<ResultTranslator>());
   // 2. Builtins
   Registry->addTranslator(std::make_unique<BuiltinTranslator>());
   // 3. Enums
