@@ -5465,3 +5465,36 @@ def HushProperty : InheritableAttr {
   let Subjects = SubjectList<[NonBitField]>;
   let Documentation = [Undocumented];
 }
+
+def HushSystem : InheritableAttr {
+  let Spellings = [CXX11<"hush", "system">];
+  let Args = [VariadicExprArgument<"SystemConfig">];
+  let Subjects = SubjectList<[Record]>;
+  let Documentation = [Undocumented];
+}
+
+def HushComponent : InheritableAttr {
+  let Spellings = [CXX11<"hush", "component">];
+  let Args = [VariadicExprArgument<"ComponentConfig">];
+  let Subjects = SubjectList<[Record]>;
+  let Documentation = [Undocumented];
+}
+
+def HushBuiltin : InheritableAttr {
+  let Spellings = [CXX11<"hush", "builtin">];
+  let Subjects = SubjectList<[Record, Enum]>;
+  let Documentation = [Undocumented];
+}
+
+def HushMeta : InheritableAttr {
+  let Spellings = [CXX11<"hush", "meta">];
+  let Args = [VariadicExprArgument<"MetaArgs">];
+  let Subjects = SubjectList<[Record, Enum, NonBitField, Function]>;
+  let Documentation = [Undocumented];
+}
+
+def HushModuleInit : InheritableAttr {
+  let Spellings = [CXX11<"hush", "module_init">];
+  let Subjects = SubjectList<[Function]>;
+  let Documentation = [Undocumented];
+}

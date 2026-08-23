@@ -650,8 +650,9 @@ ExportMatcher::resolveReturnType(const clang::FunctionDecl *D) {
   if (Res && Res->isContainer) {
     Info.cType = CType::makeVoid();
     Info.mode = ReturnMode::Callback;
-    Info.callbackInnerType = normalizeStdIntType(
-        Res->containerElementCType.name);
+    CType CallbackType = Res->containerElementCType;
+    CallbackType.name = normalizeStdIntType(CallbackType.name);
+    Info.callbackInnerType = CallbackType.toString();
     return Info;
   }
 
@@ -809,8 +810,8 @@ CParam ExportMatcher::resolveParam(const clang::FunctionDecl *D,
     Result.mode = Res->isNullTerminatedStringView
                       ? PassMode::ZStringFromParts
                       : PassMode::SpanFromParts;
-    Result.type = CType::makeBuiltin(
-        normalizeStdIntType(Res->containerElementCType.name));
+    Result.type = Res->containerElementCType;
+    Result.type.name = normalizeStdIntType(Result.type.name);
     Result.cppContainerType = Res->containerCppType;
     Result.cppInnerRealType = Res->containerElementCppType;
     return Result;

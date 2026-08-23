@@ -7267,6 +7267,18 @@ static void handleModularFormat(Sema &S, Decl *D, const ParsedAttr &AL) {
 // Hush Engine specific attribute handlers.
 //===----------------------------------------------------------------------===//
 
+// Adds a hush attribute that takes variadic expression arguments. The
+// arguments are kept in the AST so the hush tools can read them later.
+template <typename AttrType>
+static void handleHushVariadicAttr(Sema &S, Decl *D, const ParsedAttr &AL) {
+  std::vector<Expr *> HushArgs;
+  for (unsigned I = 0, E = AL.getNumArgs(); I != E; ++I) {
+    HushArgs.push_back(AL.getArgAsExpr(I));
+  }
+  D->addAttr(::new (S.Context) AttrType(S.Context, AL, HushArgs.data(),
+                                        HushArgs.size()));
+}
+
 static void handleHushExportAttr(Sema &S, Decl *D, const ParsedAttr &AL) {
   if (const auto *FD = dyn_cast<FunctionDecl>(D)) {
     if (FD->isInlined()) {
@@ -8330,13 +8342,28 @@ ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D, const ParsedAttr &AL,
     break;
   case ParsedAttr::AT_HushReflect:
     // Just pass as-is, no special handling needed.
-    handleSimpleAttribute<HushReflectAttr>(S, D, AL);
+    handleHushVariadicAttr<HushReflectAttr>(S, D, AL);
     break;
   case ParsedAttr::AT_HushFunction:
-    handleSimpleAttribute<HushFunctionAttr>(S, D, AL);
+    handleHushVariadicAttr<HushFunctionAttr>(S, D, AL);
     break;
   case ParsedAttr::AT_HushProperty:
-    handleSimpleAttribute<HushPropertyAttr>(S, D, AL);
+    handleHushVariadicAttr<HushPropertyAttr>(S, D, AL);
+    break;
+  case ParsedAttr::AT_HushSystem:
+    handleHushVariadicAttr<HushSystemAttr>(S, D, AL);
+    break;
+  case ParsedAttr::AT_HushComponent:
+    handleHushVariadicAttr<HushComponentAttr>(S, D, AL);
+    break;
+  case ParsedAttr::AT_HushBuiltin:
+    handleSimpleAttribute<HushBuiltinAttr>(S, D, AL);
+    break;
+  case ParsedAttr::AT_HushMeta:
+    handleHushVariadicAttr<HushMetaAttr>(S, D, AL);
+    break;
+  case ParsedAttr::AT_HushModuleInit:
+    handleSimpleAttribute<HushModuleInitAttr>(S, D, AL);
     break;
   case ParsedAttr::AT_ModularFormat:
     handleModularFormat(S, D, AL);

@@ -649,6 +649,17 @@ TEST(ExportMatcherTest, ContainerReturnWithRegisteredElement) {
   EXPECT_EQ(Found->callbackInnerType, "Vertex");
 }
 
+TEST(ExportMatcherTest, StringViewReturnPreservesConstElement) {
+  auto IR = runMatcher(R"cpp(
+    #include <string_view>
+    [[hush::export]] std::string_view GetName();
+  )cpp");
+  ASSERT_TRUE(IR.has_value());
+  ASSERT_EQ(IR->functions.size(), 1u);
+  EXPECT_EQ(IR->functions[0].returnMode, ReturnMode::Callback);
+  EXPECT_EQ(IR->functions[0].callbackInnerType, "const char");
+}
+
 // Static member functions are emitted as free functions (no self pointer).
 // processFunction at ExportMatcher.cpp:881 explicitly excludes static
 // members from the isMemberFunction branch — untested before this.
@@ -680,6 +691,61 @@ TEST(ExportMatcherTest, StaticMemberFunctionEmittedAsFreeFunction) {
   ASSERT_EQ(Found->params.size(), 2u);
   EXPECT_EQ(Found->params[0].name, "a");
   EXPECT_EQ(Found->params[1].name, "b");
+}
+
+TEST(ExportMatcherTest, ForeignModuleFacadeParameters) {
+  auto IR = runMatcher(R"cpp(
+    #include <cstddef>
+    #include <cstdint>
+    #include <string_view>
+    namespace Hush::Export { inline constexpr int asHandle = 0; }
+    namespace Hush {
+      using ModuleHandle = std::uint64_t;
+      class [[hush::export(Hush::Export::asHandle)]] HushEngine {};
+      class [[hush::export(Hush::Export::asHandle)]] Scene {};
+      namespace Modules {
+        [[hush::export]] bool Register(HushEngine *engine,
+                                      ModuleHandle module,
+                                      const void *descriptor);
+        [[hush::export]] bool AddSystemToScene(HushEngine *engine,
+                                              Scene *scene,
+                                              ModuleHandle module,
+                                              std::uint64_t typeId);
+        [[hush::export]] bool HasMetadata(HushEngine *engine,
+                                         std::uint64_t typeId,
+                                         const char *keyData,
+                                         std::size_t keySize);
+      }
+    }
+  )cpp");
+  ASSERT_TRUE(IR.has_value());
+
+  const CFunction *Register = nullptr;
+  const CFunction *AddSystem = nullptr;
+  const CFunction *HasMetadata = nullptr;
+  for (const auto &Function : IR->functions) {
+    if (Function.cppName == "Hush::Modules::Register")
+      Register = &Function;
+    if (Function.cppName == "Hush::Modules::AddSystemToScene")
+      AddSystem = &Function;
+    if (Function.cppName == "Hush::Modules::HasMetadata")
+      HasMetadata = &Function;
+  }
+
+  ASSERT_NE(Register, nullptr);
+  ASSERT_EQ(Register->params.size(), 3u);
+  EXPECT_EQ(Register->params[0].mode, PassMode::Reinterpret);
+  EXPECT_EQ(Register->params[2].type.toString(), "const void *");
+
+  ASSERT_NE(AddSystem, nullptr);
+  ASSERT_EQ(AddSystem->params.size(), 4u);
+  EXPECT_EQ(AddSystem->params[0].mode, PassMode::Reinterpret);
+  EXPECT_EQ(AddSystem->params[1].mode, PassMode::Reinterpret);
+
+  ASSERT_NE(HasMetadata, nullptr);
+  ASSERT_EQ(HasMetadata->params.size(), 4u);
+  EXPECT_FALSE(HasMetadata->params[2].isSpanParts);
+  EXPECT_EQ(HasMetadata->params[2].type.toString(), "const char *");
 }
 
 // Non-const reference param to a registered struct — converts to T*

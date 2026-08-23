@@ -49,6 +49,7 @@ int main(int argc, const char **argv) {
 
   ClangTool Tool(CompileDb, PathList);
   CommandLineArguments AdditionalArgs {
+    "-DHUSH_HEADER_PARSING=1",
     #ifdef _WIN64
     "-D_WIN64"
     #endif
@@ -66,12 +67,6 @@ int main(int argc, const char **argv) {
     ArgumentInsertPosition::BEGIN
   ));
 
-  std::error_code EC;
-  llvm::raw_fd_ostream HeaderOutFile("HushBindings.h", EC,
-                                     llvm::sys::fs::OF_Text);
-  llvm::raw_fd_ostream CppOutFile("HushBindings.cpp", EC,
-                                  llvm::sys::fs::OF_Text);
-
   // Phase 1: AST extraction → CBindingIR (single pass)
   hush::ExportMatcher Matcher;
 
@@ -88,8 +83,35 @@ int main(int argc, const char **argv) {
   }
 
   // Phase 2: Emit code
+  std::error_code HeaderEC;
+  llvm::raw_fd_ostream HeaderOutFile("HushBindings.h", HeaderEC,
+                                     llvm::sys::fs::OF_Text);
+  if (HeaderEC) {
+    llvm::errs() << "Error opening HushBindings.h: " << HeaderEC.message()
+                 << "\n";
+    return 1;
+  }
+
+  std::error_code CppEC;
+  llvm::raw_fd_ostream CppOutFile("HushBindings.cpp", CppEC,
+                                  llvm::sys::fs::OF_Text);
+  if (CppEC) {
+    llvm::errs() << "Error opening HushBindings.cpp: " << CppEC.message()
+                 << "\n";
+    return 1;
+  }
+
   hush::CodeEmitter Emitter;
   Emitter.emit(Matcher.getIR(), HeaderOutFile, CppOutFile);
+
+  HeaderOutFile.close();
+  CppOutFile.close();
+  if (HeaderOutFile.has_error() || CppOutFile.has_error()) {
+    llvm::errs() << "Error writing generated binding files\n";
+    HeaderOutFile.clear_error();
+    CppOutFile.clear_error();
+    return 1;
+  }
 
   return Result;
 }

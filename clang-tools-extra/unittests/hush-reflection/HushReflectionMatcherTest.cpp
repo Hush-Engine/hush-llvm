@@ -19,6 +19,8 @@ TEST(HushReflectionMatcherTest, FileOutsideCWD) {
   HushReflectionCallback Callback("/home/user/project");
   EXPECT_FALSE(
       Callback.isFileInCurrentWorkingDirectory("/usr/include/string.h"));
+  EXPECT_FALSE(Callback.isFileInCurrentWorkingDirectory(
+      "/home/user/project-old/src/Foo.hpp"));
 }
 
 TEST(HushReflectionMatcherTest, EmptyCallbackState) {

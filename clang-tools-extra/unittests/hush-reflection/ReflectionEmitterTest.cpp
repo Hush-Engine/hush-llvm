@@ -18,10 +18,13 @@ using namespace hush_reflection;
 namespace {
 
 static std::string emitToString(const ClassModel &Model) {
+  ClassModel ModelToEmit = Model;
+  if (ModelToEmit.CanonicalName.empty())
+    ModelToEmit.CanonicalName = ModelToEmit.UnqualifiedName;
   std::string Output;
   llvm::raw_string_ostream OS(Output);
   ReflectionEmitter Emitter;
-  Emitter.emit(Model, OS);
+  Emitter.emit(ModelToEmit, OS);
   OS.flush();
   return Output;
 }
@@ -41,7 +44,7 @@ TEST(ReflectionEmitterTest, EmptyClass) {
   EXPECT_TRUE(S.contains("\"Empty\""));
   EXPECT_TRUE(S.contains("TypeId()"));
   EXPECT_TRUE(S.contains("RegisterReflection"));
-  EXPECT_TRUE(S.contains(".Register()"));
+  EXPECT_TRUE(S.contains(".Register(module) == Hush::Reflection::ERegisterClassError::None"));
   EXPECT_TRUE(S.contains("Serialize"));
   EXPECT_TRUE(S.contains("Deserialize"));
   EXPECT_TRUE(S.contains("private:"));
@@ -121,7 +124,7 @@ TEST(ReflectionEmitterTest, FieldWithCustomSetter) {
   std::string Output = emitToString(Model);
   llvm::StringRef S(Output);
 
-  EXPECT_TRUE(S.contains("instance->setPos(value.value())"));
+  EXPECT_TRUE(S.contains("instance->setPos(*value.value())"));
 }
 
 // ---------------------------------------------------------------------------
@@ -147,7 +150,7 @@ TEST(ReflectionEmitterTest, FieldWithBothCustomAccessors) {
   llvm::StringRef S(Output);
 
   EXPECT_TRUE(S.contains("instance->getPos()"));
-  EXPECT_TRUE(S.contains("instance->setPos(value.value())"));
+  EXPECT_TRUE(S.contains("instance->setPos(*value.value())"));
 }
 
 // ---------------------------------------------------------------------------
@@ -519,7 +522,7 @@ TEST(ReflectionEmitterTest, FullClassIntegration) {
   EXPECT_TRUE(S.contains(".AddProperty("));
   EXPECT_TRUE(S.contains("\"hp\""));
   EXPECT_TRUE(S.contains("\"mp\""));
-  EXPECT_TRUE(S.contains(".Register()"));
+  EXPECT_TRUE(S.contains(".Register(module)"));
 
   // Serialization section
   EXPECT_TRUE(S.contains("Serialize<std::string_view>(\"__type\""));
@@ -530,6 +533,77 @@ TEST(ReflectionEmitterTest, FullClassIntegration) {
   EXPECT_TRUE(S.contains("mpVisitor"));
 
   EXPECT_TRUE(S.contains("private:"));
+}
+
+TEST(ReflectionEmitterTest, SystemDescriptorUsesCanonicalName) {
+  ClassModel Model;
+  Model.QualifiedName = "Game::TrafficSystem";
+  Model.UnqualifiedName = "TrafficSystem";
+  Model.CanonicalName = "Game.TrafficSystem";
+  Model.IsSystem = true;
+  Model.SystemOrder = 42;
+
+  std::string Output = emitToString(Model);
+  llvm::StringRef S(Output);
+  EXPECT_TRUE(S.contains("#include <ISystem.hpp>"));
+  EXPECT_TRUE(S.contains("#include <SystemDescriptor.hpp>"));
+  EXPECT_TRUE(S.contains("static constexpr std::uint16_t SystemOrder() { return 42; }"));
+  EXPECT_TRUE(S.contains("CreateSystemInstance(Hush::Scene &scene)"));
+  EXPECT_TRUE(S.contains("new Game::TrafficSystem(scene)"));
+  EXPECT_TRUE(S.contains("GetSystemDescriptor()"));
+  EXPECT_TRUE(S.contains("METADATA_KEY_SYSTEM"));
+  EXPECT_TRUE(S.contains("\"Game.TrafficSystem\""));
+}
+
+TEST(ReflectionEmitterTest, EmitsTypeAndMemberMetadata) {
+  ClassModel Model;
+  Model.QualifiedName = "Hush::Player";
+  Model.UnqualifiedName = "Player";
+  Model.CanonicalName = "Hush.Player";
+  Model.IsBuiltin = true;
+  Model.IsComponent = true;
+  Model.Metadata.push_back({"category", "gameplay"});
+
+  FieldModel Field;
+  Field.Name = "health";
+  Field.TypeName = "int";
+  Field.ParentClassName = Model.QualifiedName;
+  Field.VisitorFieldName = "healthVisitor";
+  Field.Metadata.push_back({"range", "0,100"});
+  Model.Fields.push_back(Field);
+
+  FunctionModel Function;
+  Function.Name = "Heal";
+  Function.ParentClassName = Model.QualifiedName;
+  Function.ReturnsVoid = true;
+  Function.Metadata.push_back({"action", "true"});
+  Model.Functions.push_back(Function);
+
+  std::string Output = emitToString(Model);
+  llvm::StringRef S(Output);
+  EXPECT_TRUE(S.contains("METADATA_KEY_BUILTIN"));
+  EXPECT_TRUE(S.contains("METADATA_KEY_COMPONENT"));
+  EXPECT_TRUE(S.contains(".AddMetadata(\"category\", \"gameplay\")"));
+  EXPECT_TRUE(S.contains("{{\"range\", \"0,100\"}}"));
+  EXPECT_TRUE(S.contains("{{\"action\", \"true\"}}"));
+  EXPECT_TRUE(S.contains("Serialize<std::string_view>(\"__type\", \"Hush.Player\")"));
+}
+
+TEST(ReflectionEmitterTest, WellKnownMetadataOverridesUserValues) {
+  ClassModel Model;
+  Model.QualifiedName = "Game::System";
+  Model.UnqualifiedName = "System";
+  Model.CanonicalName = "Game.System";
+  Model.IsSystem = true;
+  Model.Metadata.push_back({"hush.system", "false"});
+
+  std::string Output = emitToString(Model);
+  llvm::StringRef S(Output);
+  const size_t UserMarker = S.find(".AddMetadata(\"hush.system\", \"false\")");
+  const size_t WellKnownMarker = S.find("METADATA_KEY_SYSTEM");
+  ASSERT_NE(UserMarker, llvm::StringRef::npos);
+  ASSERT_NE(WellKnownMarker, llvm::StringRef::npos);
+  EXPECT_LT(UserMarker, WellKnownMarker);
 }
 
 } // namespace

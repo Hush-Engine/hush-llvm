@@ -1,8 +1,46 @@
 #include "ReflectionEmitter.h"
 
+#include <cstdio>
 #include <string>
 
 namespace hush_reflection {
+namespace {
+
+std::string escapeCppString(const std::string &Value) {
+  std::string Escaped;
+  Escaped.reserve(Value.size());
+  for (unsigned char C : Value) {
+    switch (C) {
+    case '\\':
+      Escaped += "\\\\";
+      break;
+    case '"':
+      Escaped += "\\\"";
+      break;
+    case '\n':
+      Escaped += "\\n";
+      break;
+    case '\r':
+      Escaped += "\\r";
+      break;
+    case '\t':
+      Escaped += "\\t";
+      break;
+    default:
+      if (C >= 0x20 && C <= 0x7e) {
+        Escaped.push_back(static_cast<char>(C));
+      } else {
+        char Octal[5]{};
+        std::snprintf(Octal, sizeof(Octal), "\\%03o", C);
+        Escaped += Octal;
+      }
+      break;
+    }
+  }
+  return Escaped;
+}
+
+} // namespace
 
 // ---------------------------------------------------------------------------
 // Top-level emit
@@ -11,6 +49,9 @@ namespace hush_reflection {
 void ReflectionEmitter::emit(const ClassModel &Model,
                              llvm::raw_ostream &OS) const {
   emitReflectionCode(Model, OS);
+  if (Model.IsSystem) {
+    emitSystemCode(Model, OS);
+  }
   emitSerializeCode(Model, OS);
   emitDeserializeCode(Model, OS);
   OS << "private:\n";
@@ -27,7 +68,13 @@ void ReflectionEmitter::emitReflectionCode(const ClassModel &Model,
 
   Out += "#include <reflection/Type.hpp>\n"
          "#include <serialization/Serialization.hpp>\n"
-         "#include <serialization/Deserialization.hpp>\n\n"
+         "#include <serialization/Deserialization.hpp>\n";
+  if (Model.IsSystem) {
+    // Systems also need the engine system descriptor types.
+    Out += "#include <ISystem.hpp>\n"
+           "#include <SystemDescriptor.hpp>\n";
+  }
+  Out += "\n"
          "#ifdef HUSH_GENERATED_BODY\n"
          "#undef HUSH_GENERATED_BODY\n"
          "#endif\n"
@@ -39,10 +86,11 @@ void ReflectionEmitter::emitReflectionCode(const ClassModel &Model,
          "  static constexpr std::uint64_t TypeId() { return \\\n"
          "Hush::Hashing::Fnv1a64(TypeName()); } \\\n"
          "  static constexpr std::string_view TypeName() { return \"";
-  Out += Model.UnqualifiedName;
+  Out += escapeCppString(Model.CanonicalName);
   Out += "\"; }\\\n"
-         "  static void RegisterReflection(Hush::Reflection::ReflectionDB &db) "
-         "{ \\\n";
+         "  static bool RegisterReflection(Hush::Reflection::ReflectionDB &db, \\\n"
+         "Hush::ModuleHandle module = Hush::ENGINE_MODULE_HANDLE) { \\\n"
+         "return \\\n";
   Out += "db.RegisterClass<";
   Out += Model.QualifiedName;
   Out += ">()\\\n";
@@ -59,8 +107,56 @@ void ReflectionEmitter::emitReflectionCode(const ClassModel &Model,
     Out += emitFieldProperty(Field);
   }
 
-  Out += ".Register();\\\n";
+  for (const auto &Meta : Model.Metadata) {
+    Out += ".AddMetadata(\"";
+    Out += escapeCppString(Meta.Key);
+    Out += "\", \"";
+    Out += escapeCppString(Meta.Value);
+    Out += "\")\\\n";
+  }
+
+  // Emit authoritative markers after user metadata so reserved keys cannot be
+  // changed by an annotation.
+  if (Model.IsBuiltin) {
+    Out += ".AddMetadata(Hush::Reflection::METADATA_KEY_BUILTIN.data(), \"true\")\\\n";
+  }
+  if (Model.IsComponent) {
+    Out +=
+        ".AddMetadata(Hush::Reflection::METADATA_KEY_COMPONENT.data(), \"true\")\\\n";
+  }
+  if (Model.IsSystem) {
+    Out += ".AddMetadata(Hush::Reflection::METADATA_KEY_SYSTEM.data(), \"true\")\\\n";
+  }
+
+  Out += ".Register(module) == Hush::Reflection::ERegisterClassError::None;\\\n";
   Out += "}\\\n";
+
+  OS << Out;
+}
+
+// ---------------------------------------------------------------------------
+// Systems (factory + descriptor)
+// ---------------------------------------------------------------------------
+
+void ReflectionEmitter::emitSystemCode(const ClassModel &Model,
+                                       llvm::raw_ostream &OS) const {
+  std::string Out;
+
+  // The factory is a static member so it can call the protected SetOrder.
+  Out += "  static constexpr std::uint16_t SystemOrder() { return ";
+  Out += std::to_string(Model.SystemOrder);
+  Out += "; }\\\n"
+         "  static Hush::ISystem *CreateSystemInstance(Hush::Scene &scene) { \\\n"
+         "    auto *system = new ";
+  Out += Model.QualifiedName;
+  Out += "(scene); \\\n"
+         "    system->SetOrder(SystemOrder()); \\\n"
+         "    return system; \\\n"
+         "  } \\\n"
+         "  static Hush::SystemDescriptor GetSystemDescriptor() { \\\n"
+         "    return {Hush::Reflection::TypeId{TypeId()}, TypeName().data(), \\\n"
+         "        SystemOrder(), &CreateSystemInstance}; \\\n"
+         "  }\\\n";
 
   OS << Out;
 }
@@ -80,7 +176,7 @@ void ReflectionEmitter::emitSerializeCode(const ClassModel &Model,
 
   Out += "  auto error = serializer.template "
          "Serialize<std::string_view>(\"__type\", \"";
-  Out += Model.QualifiedName;
+  Out += escapeCppString(Model.CanonicalName);
   Out += "\");\\\n";
   Out += "  if (error != Hush::Serialization::ESerializationError::"
          "None) {\\\n";
@@ -241,6 +337,26 @@ void ReflectionEmitter::emitDeserializeCode(const ClassModel &Model,
 // Field helpers
 // ---------------------------------------------------------------------------
 
+std::string ReflectionEmitter::emitMetadataInitList(
+    const std::vector<MetaPair> &Meta) {
+  if (Meta.empty()) {
+    return "";
+  }
+  std::string Out = ", {";
+  for (size_t I = 0; I < Meta.size(); ++I) {
+    Out += "{\"";
+    Out += escapeCppString(Meta[I].Key);
+    Out += "\", \"";
+    Out += escapeCppString(Meta[I].Value);
+    Out += "\"}";
+    if (I + 1 < Meta.size()) {
+      Out += ", ";
+    }
+  }
+  Out += "}";
+  return Out;
+}
+
 std::string ReflectionEmitter::emitFieldProperty(const FieldModel &Field) {
   std::string Out;
   Out.reserve(8192);
@@ -259,7 +375,9 @@ std::string ReflectionEmitter::emitFieldProperty(const FieldModel &Field) {
   Out += Field.ParentClassName;
   Out += ", ";
   Out += Field.Name;
-  Out += ")))\\\n";
+  Out += ")";
+  Out += emitMetadataInitList(Field.Metadata);
+  Out += "))\\\n";
 
   return Out;
 }
@@ -304,7 +422,7 @@ std::string ReflectionEmitter::emitFieldSetter(const FieldModel &Field) {
   Out += "      }\\\n";
 
   if (Field.HasCustomSetter) {
-    Out += "      instance->" + Field.SetterName + "(value.value());\\\n";
+    Out += "      instance->" + Field.SetterName + "(*value.value());\\\n";
   } else {
     Out += "      instance->" + Field.Name + " = *value.value();\\\n";
   }
@@ -579,7 +697,9 @@ std::string ReflectionEmitter::emitFunction(const FunctionModel &Func) {
 
   Code += "}, \"";
   Code += Func.Name;
-  Code += "\"))\\\n";
+  Code += "\"";
+  Code += emitMetadataInitList(Func.Metadata);
+  Code += "))\\\n";
 
   return Code;
 }

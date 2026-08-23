@@ -375,8 +375,9 @@ TEST(TypeTranslatorTest, StdStringView) {
   ASSERT_TRUE(res.has_value());
   EXPECT_TRUE(res->isContainer);
   EXPECT_EQ(res->containerElementCType.kind, CType::Builtin);
-  // Element type is char
   EXPECT_EQ(res->containerElementCType.name, "char");
+  EXPECT_TRUE(res->containerElementCType.isConst);
+  EXPECT_EQ(res->containerElementCppType, "const char");
 }
 
 TEST(TypeTranslatorTest, ContainerOfRegisteredStruct) {

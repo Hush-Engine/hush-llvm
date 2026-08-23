@@ -303,6 +303,13 @@ ContainerTranslator::translate(clang::QualType Type,
     ElementCType = CType::makeBuiltin(CName);
   }
 
+  // String views expose read-only character storage even though their first
+  // template argument is the unqualified character type.
+  if (isTemplateNamed(Type, {"std::basic_string_view"})) {
+    ElementCType.isConst = true;
+    ElementCppType = "const " + ElementCppType;
+  }
+
   TypeResolution Res;
   // The C-side type for a container return is void (callback handles it).
   // For parameters, it expands to (T* data, size_t size).

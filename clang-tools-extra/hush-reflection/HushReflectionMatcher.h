@@ -1,7 +1,10 @@
 #pragma once
 
+#include "ReflectionModel.h"
+
 #include <clang/ASTMatchers/ASTMatchFinder.h>
 
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -11,6 +14,8 @@ struct ReflectedTypeEntry {
   std::string QualifiedClassName;
   /// Absolute path to the header file where the class is defined.
   std::string HeaderPath;
+  /// Set when the class is marked with [[hush::system]].
+  bool IsSystem = false;
 };
 
 class HushReflectionCallback
@@ -29,8 +34,25 @@ public:
     return ReflectedTypes;
   }
 
+  const std::vector<hush_reflection::ModuleInitFunction> &
+  getModuleInitFunctions() const {
+    return ModuleInitFunctions;
+  }
+
+  /// Set to true when any annotation configuration error was reported.
+  bool hasErrors() const { return HasErrors; }
+
+  /// Writes all per-header generated files after the complete tool run has
+  /// succeeded, so a later parse error cannot truncate valid prior output.
+  bool writeOutputs();
+
 private:
   std::vector<ReflectedTypeEntry> ReflectedTypes;
-  std::set<std::string> ParsedFiles;
+  std::vector<hush_reflection::ModuleInitFunction> ModuleInitFunctions;
+  std::set<std::string> ParsedModuleInitFunctions;
+  /// Maps each parsed header to the qualified name of its reflected type.
+  std::map<std::string, std::string> ParsedFiles;
+  std::map<std::string, std::string> PendingOutputs;
   llvm::StringRef CurrentWorkingDirectory;
+  bool HasErrors = false;
 };
