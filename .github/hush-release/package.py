@@ -96,7 +96,10 @@ def smoke_test(bundle):
         run(binary, "--help", stdout=subprocess.DEVNULL)
 
     with tempfile.TemporaryDirectory(prefix="hush source with spaces ") as tmp:
-        work = Path(tmp)
+        # macOS exposes /var through a symlink to /private/var. The reflection
+        # matcher filters headers against the physical working directory, so
+        # pass source paths using the same canonical spelling as getcwd().
+        work = Path(tmp).resolve()
         header = work / "probe.hpp"
         header.write_text('''#include <stddef.h>
 #include <stdarg.h>

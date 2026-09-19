@@ -1,4 +1,6 @@
+from contextlib import nullcontext
 import os
+import subprocess
 from pathlib import Path
 import tempfile
 import unittest
@@ -9,6 +11,7 @@ from package import (
     create_archive,
     extract_archive,
     require_text,
+    smoke_test,
     validate_dependencies,
 )
 
@@ -96,6 +99,37 @@ class PackageTests(unittest.TestCase):
             require_text(output, "ReleaseProbe", "RegisterReflection")
             with self.assertRaises(RuntimeError):
                 require_text(output, "missing")
+
+    def test_smoke_source_paths_resolve_symlinked_temp_directory(self):
+        # Reproduce macOS /var -> /private/var without requiring a macOS host.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            physical = root / "physical source with spaces"
+            physical.mkdir()
+            alias = root / "alias"
+            try:
+                alias.symlink_to(physical, target_is_directory=True)
+            except OSError as error:
+                self.skipTest(f"Directory symlinks unavailable: {error}")
+            parse_failure = subprocess.CompletedProcess(
+                [], 1, stdout="", stderr="intentional_release_smoke_failure")
+            with (
+                patch("package.tempfile.TemporaryDirectory", return_value=nullcontext(str(alias))),
+                patch("package.platform.system", return_value="Linux"),
+                patch("package.run") as run_tool,
+                patch("package.require_text"),
+                patch("package.subprocess.run", return_value=parse_failure) as parse_tool,
+            ):
+                smoke_test(root / "bundle")
+            generator_calls = [call for call in run_tool.call_args_list if "cwd" in call.kwargs]
+            self.assertEqual(len(generator_calls), 2)
+            for call in generator_calls:
+                self.assertEqual(call.kwargs["cwd"], physical)
+                self.assertIn(physical / "probe.cpp", call.args)
+            self.assertEqual(parse_tool.call_count, 2)
+            for call in parse_tool.call_args_list:
+                self.assertEqual(call.kwargs["cwd"], physical)
+                self.assertIn(str(physical / "probe.cpp"), call.args[0])
 
     @patch("package.platform.system", return_value="Windows")
     @patch("package.platform.machine", return_value="AMD64")

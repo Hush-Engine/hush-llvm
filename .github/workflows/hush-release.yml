@@ -45,7 +45,8 @@ jobs:
     env:
       CC: ${{ matrix.cc }}
       CXX: ${{ matrix.cxx }}
-      PLATFORM: ${{ matrix.platform }}
+      # MSVC's developer environment sets PLATFORM=x64; keep our asset label separate.
+      HUSH_RELEASE_PLATFORM: ${{ matrix.platform }}
     steps:
       - name: Checkout release source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -123,7 +124,7 @@ jobs:
             done
           fi
           python .github/hush-release/package.py \
-            --build-dir build --output-dir dist --platform "$PLATFORM" \
+            --build-dir build --output-dir dist --platform "$HUSH_RELEASE_PLATFORM" \
             --ref "$RELEASE_REF" "${package_args[@]}"
 
       - name: Save validated release assets
