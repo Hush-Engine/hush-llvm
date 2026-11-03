@@ -199,7 +199,7 @@ enum class ReturnMode {
 struct CFunction {
   std::string name;     // C-side name
   std::string cppName;  // Fully qualified C++ name (e.g., "Hush::Scene::load")
-  std::vector<std::string> MacroMarkers;
+  std::vector<std::string> macroMarkers;
 
   CType returnType;
   ReturnMode returnMode = ReturnMode::Void;

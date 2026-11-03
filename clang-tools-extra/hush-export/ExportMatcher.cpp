@@ -1009,7 +1009,7 @@ void ExportMatcher::processFunction(const clang::HushExportAttr *Attr,
   CFunction Func;
   Func.name = ExportName;
   Func.cppName = CppName;
-  Func.MacroMarkers = std::move(Opts.customMarkers);
+  Func.macroMarkers = std::move(Opts.customMarkers);
 
   // Member function?
   if (const auto *Parent = D->getParent();

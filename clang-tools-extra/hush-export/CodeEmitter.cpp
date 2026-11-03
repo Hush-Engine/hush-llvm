@@ -199,7 +199,7 @@ std::string CodeEmitter::buildSignature(const CFunction &Func) const {
 void CodeEmitter::emitFunctionDecl(const CFunction &Func,
                                    llvm::raw_ostream &Header) const {
   // Process the macros first
-  for (const std::string& Marker : Func.MacroMarkers) {
+  for (const std::string& Marker : Func.macroMarkers) {
     Header << Marker << "\n";
   }
   Header << "extern " << buildSignature(Func) << ";\n";
