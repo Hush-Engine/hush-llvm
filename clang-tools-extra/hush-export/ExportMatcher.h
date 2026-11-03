@@ -19,6 +19,7 @@ namespace hush {
 /// Parsed attribute options common to all declarations.
 struct ExportAttrOptions {
   std::string customName;
+  std::vector<std::string> customMarkers;
   bool ignore = false;
   bool asHandle = false;
 };
