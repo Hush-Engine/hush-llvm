@@ -197,6 +197,28 @@ ExportAttrOptions ExportMatcher::parseExportAttr(
         if (auto Name = getHushExportName(Call, Ctx))
           Opts.customName = *Name;
       }
+
+      // Macro metadata markers
+      std::optional<std::string> QueryIdMarker =
+          getHushQueryIdMarker(Call, Ctx);
+      if (QueryIdMarker) {
+        Opts.customMarkers.emplace_back(std::move(QueryIdMarker.value()));
+      }
+      std::optional<std::string> RetTypeMarker =
+          getHushReturnTypeMarker(Call, Ctx);
+      if (RetTypeMarker) {
+        Opts.customMarkers.emplace_back(std::move(RetTypeMarker.value()));
+      }
+      std::optional<std::string> NameTypeMarker =
+          getHushTypenameMarker(Call, Ctx);
+      if (NameTypeMarker) {
+        Opts.customMarkers.emplace_back(std::move(NameTypeMarker.value()));
+      }
+      std::optional<std::string> SizeTypeMarker =
+          getHushTypeSizeMarker(Call, Ctx);
+      if (SizeTypeMarker) {
+        Opts.customMarkers.emplace_back(std::move(SizeTypeMarker.value()));
+      }
     }
   }
   return Opts;
@@ -987,6 +1009,7 @@ void ExportMatcher::processFunction(const clang::HushExportAttr *Attr,
   CFunction Func;
   Func.name = ExportName;
   Func.cppName = CppName;
+  Func.MacroMarkers = std::move(Opts.customMarkers);
 
   // Member function?
   if (const auto *Parent = D->getParent();

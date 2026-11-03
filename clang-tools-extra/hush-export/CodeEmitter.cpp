@@ -43,6 +43,11 @@ void CodeEmitter::emitHeaderPreamble(llvm::raw_ostream &OS) const {
         "// NOLINTBEGIN\n"
         "#include <stdbool.h>\n"
         "#include <stdint.h>\n\n\n"
+        "#define HUSH_QCOMP_ID(...) \n"
+        "#define T_PAIR(Type, Name) \n"
+        "#define HUSH_RET_T(Type) \n"
+        "#define HUSH_NAME_T(...) \n"
+        "#define HUSH_SIZE_T(...) \n"
         "#ifdef __cplusplus\n"
         "extern \"C\" {\n"
         "#endif\n\n";
@@ -193,6 +198,10 @@ std::string CodeEmitter::buildSignature(const CFunction &Func) const {
 
 void CodeEmitter::emitFunctionDecl(const CFunction &Func,
                                    llvm::raw_ostream &Header) const {
+  // Process the macros first
+  for (const std::string& Marker : Func.MacroMarkers) {
+    Header << Marker << "\n";
+  }
   Header << "extern " << buildSignature(Func) << ";\n";
 }
 
