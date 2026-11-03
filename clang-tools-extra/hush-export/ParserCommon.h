@@ -37,18 +37,45 @@ std::optional<std::string> getHushExportName(const clang::CallExpr *CallExpr,
 std::optional<std::string> getHushQueryIdMarker(const clang::CallExpr *CallExpr,
                                                 clang::ASTContext &ASTContext);
 
+/// @brief Produces a macro marker for a symbol whose return type is templated,
+/// allowing binding generators to emit a generic wrapper.
+/// @details For example:
+/// @code {.cpp}
+/// [[hush::export(Hush::Export::templatedReturn("T0"))]]
+/// void* GetComponentRaw(EntityId componentId);
+/// @endcode
+/// Would produce:
+/// @code {.c}
+/// HUSH_RET_T(T0)
+/// extern void * Hush__Entity__GetComponentRaw(Hush__Entity *self, Hush__Entity_EntityId componentId);
+/// @endcode
+/// The binding generator uses T0 to emit a generic wrapper such as:
+/// @code {.cs}
+/// public T0* GetComponent<T0>(uint64 componentId) {
+///     return (T0*)this.GetComponentRaw(componentId);
+/// }
+/// @endcode
+/// @return nullopt if the call is not templatedReturn or argument validation
+/// fails; otherwise a string containing the HUSH_RET_T(...) macro invocation.
 std::optional<std::string>
 getHushReturnTypeMarker(const clang::CallExpr *CallExpr,
                         clang::ASTContext &ASTContext);
+
 
 std::optional<std::string>
 getHushTypenameMarker(const clang::CallExpr *CallExpr,
                       clang::ASTContext &ASTContext);
 
+
 std::optional<std::string>
 getHushTypeSizeMarker(const clang::CallExpr *CallExpr,
                       clang::ASTContext &ASTContext);
 
+/// @brief Returns true if the attribute argument is Hush::Export::ignore,
+/// indicating the symbol should be excluded from the generated bindings.
 bool isHushExportIgnore(const clang::DeclRefExpr *CallExpr);
 
+/// @brief Returns true if the attribute argument is Hush::Export::asHandle,
+/// indicating the type should be exported as an opaque handle rather than a
+/// full struct layout.
 bool isHushExportHandle(const clang::DeclRefExpr *CallExpr);

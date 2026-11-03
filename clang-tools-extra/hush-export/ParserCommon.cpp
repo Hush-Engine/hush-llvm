@@ -1,5 +1,6 @@
 #include "ParserCommon.h"
 #include "clang/AST/Expr.h"
+#include "clang/Basic/SourceLocation.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Casting.h"
@@ -8,7 +9,18 @@
 #include <clang/AST/ASTContext.h>
 #include <clang/AST/Decl.h>
 #include <optional>
-#include <vector>
+
+template <size_t N>
+void hushMakeDiagnosticMessage(clang::ASTContext &ASTContext,
+                               const clang::SourceLocation &Loc,
+                               const char (&Message)[N]) {
+  clang::DiagnosticsEngine &DiagEngine = ASTContext.getDiagnostics();
+
+  unsigned DiagID =
+      DiagEngine.getCustomDiagID(clang::DiagnosticsEngine::Error, Message);
+
+  DiagEngine.Report(Loc, DiagID);
+}
 
 bool hushArgStringify(const clang::Expr *Arg, llvm::StringRef &OutStr) {
   if (Arg == nullptr) {
@@ -39,19 +51,16 @@ std::optional<std::string> getHushExportName(const clang::CallExpr *CallExpr,
       }
     }
 
-    clang::DiagnosticsEngine &DiagEngine = ASTContext.getDiagnostics();
-
-    unsigned DiagID = DiagEngine.getCustomDiagID(
-        clang::DiagnosticsEngine::Error,
+    hushMakeDiagnosticMessage(
+        ASTContext, ArgValue->getExprLoc(),
         "Hush::Export::name should have a string literal argument");
-
-    DiagEngine.Report(ArgValue->getExprLoc(), DiagID);
   }
 
   return std::nullopt;
 }
 
-uint32_t hushMakeTypePairsFromArgs(const clang::CallExpr *CallExpr, std::string& MarkerRef) {
+uint32_t hushMakeTypePairsFromArgs(const clang::CallExpr *CallExpr,
+                                   std::string &MarkerRef) {
   uint32_t ParsedArgs = 0;
 
   // The queryCompIdParams function has variadic args, we must parse all of them
@@ -90,18 +99,11 @@ std::optional<std::string> getHushQueryIdMarker(const clang::CallExpr *CallExpr,
   uint32_t ParsedArgs = hushMakeTypePairsFromArgs(CallExpr, Marker);
 
   if (ParsedArgs == 0) {
-    clang::DiagnosticsEngine &DiagEngine = ASTContext.getDiagnostics();
-
-    unsigned DiagID =
-        DiagEngine.getCustomDiagID(clang::DiagnosticsEngine::Error,
-                                   "Hush::Export::queryCompIdParams should "
-                                   "have one or more string literal arguments");
-
-    DiagEngine.Report(CallExpr->getExprLoc(), DiagID);
-
+    hushMakeDiagnosticMessage(ASTContext, CallExpr->getExprLoc(),
+                              "Hush::Export::queryCompIdParams should "
+                              "have one or more string literal arguments");
     return std::nullopt;
   }
-
 
   Marker += ")";
 
@@ -118,21 +120,15 @@ getHushReturnTypeMarker(const clang::CallExpr *CallExpr,
   }
 
   uint32_t Argc = CallExpr->getNumArgs();
-  if (Argc != 1) {
-    clang::DiagnosticsEngine &DiagEngine = ASTContext.getDiagnostics();
-
-    unsigned DiagID =
-        DiagEngine.getCustomDiagID(clang::DiagnosticsEngine::Error,
-                                   "Hush::Export::templatedReturn should have "
-                                   "EXACTLY one string literal argument");
-
-    DiagEngine.Report(CallExpr->getExprLoc(), DiagID);
+  llvm::StringRef ArgName;
+  if (Argc != 1 || !hushArgStringify(CallExpr->getArg(0), ArgName)) {
+    hushMakeDiagnosticMessage(ASTContext, CallExpr->getExprLoc(),
+                              "Hush::Export::templatedReturn should have "
+                              "EXACTLY one string literal argument");
 
     return std::nullopt;
   }
 
-  llvm::StringRef ArgName;
-  hushArgStringify(CallExpr->getArg(0), ArgName);
   auto Formated = llvm::formatv("HUSH_RET_T({})", ArgName);
   return Formated.str();
 }
@@ -140,7 +136,6 @@ getHushReturnTypeMarker(const clang::CallExpr *CallExpr,
 std::optional<std::string>
 getHushTypenameMarker(const clang::CallExpr *CallExpr,
                       clang::ASTContext &ASTContext) {
-
 
   const clang::FunctionDecl *ArgFunction = CallExpr->getDirectCallee();
   if (ArgFunction == nullptr || ArgFunction->getName() != "typeNameParams") {
@@ -152,18 +147,12 @@ getHushTypenameMarker(const clang::CallExpr *CallExpr,
   uint32_t ParsedArgs = hushMakeTypePairsFromArgs(CallExpr, Marker);
 
   if (ParsedArgs == 0) {
-    clang::DiagnosticsEngine &DiagEngine = ASTContext.getDiagnostics();
-
-    unsigned DiagID =
-        DiagEngine.getCustomDiagID(clang::DiagnosticsEngine::Error,
-                                   "Hush::Export::queryCompIdParams should "
-                                   "have one or more string literal arguments");
-
-    DiagEngine.Report(CallExpr->getExprLoc(), DiagID);
+    hushMakeDiagnosticMessage(ASTContext, CallExpr->getExprLoc(),
+                              "Hush::Export::typeNameParams should "
+                              "have one or more string literal arguments");
 
     return std::nullopt;
   }
-
 
   Marker += ")";
 
@@ -173,7 +162,6 @@ getHushTypenameMarker(const clang::CallExpr *CallExpr,
 std::optional<std::string>
 getHushTypeSizeMarker(const clang::CallExpr *CallExpr,
                       clang::ASTContext &ASTContext) {
-  
 
   const clang::FunctionDecl *ArgFunction = CallExpr->getDirectCallee();
   if (ArgFunction == nullptr || ArgFunction->getName() != "typeSizeParams") {
@@ -185,15 +173,9 @@ getHushTypeSizeMarker(const clang::CallExpr *CallExpr,
   uint32_t ParsedArgs = hushMakeTypePairsFromArgs(CallExpr, Marker);
 
   if (ParsedArgs == 0) {
-    clang::DiagnosticsEngine &DiagEngine = ASTContext.getDiagnostics();
-
-    unsigned DiagID =
-        DiagEngine.getCustomDiagID(clang::DiagnosticsEngine::Error,
-                                   "Hush::Export::queryCompIdParams should "
-                                   "have one or more string literal arguments");
-
-    DiagEngine.Report(CallExpr->getExprLoc(), DiagID);
-
+    hushMakeDiagnosticMessage(ASTContext, CallExpr->getExprLoc(),
+                              "Hush::Export::typeSizeParams should "
+                              "have one or more string literal arguments");
     return std::nullopt;
   }
 
@@ -208,9 +190,4 @@ bool isHushExportIgnore(const clang::DeclRefExpr *CallExpr) {
 
 bool isHushExportHandle(const clang::DeclRefExpr *DeclRef) {
   return DeclRef->getDecl()->getName() == "asHandle";
-}
-
-bool isHushTemplatable(const clang::DeclRefExpr *CallExpr,
-                       clang::ASTContext &ASTContext) {
-  return CallExpr->getDecl()->getName() == "templatable";
 }
