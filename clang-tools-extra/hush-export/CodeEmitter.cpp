@@ -80,16 +80,15 @@ void CodeEmitter::emitTypeAlias(const CTypeAlias &Alias,
 void CodeEmitter::emitEnum(const CEnumDef &Enum, llvm::raw_ostream &Header) const {
   if (Enum.isPlainEnum) {
     Header << "typedef enum " << Enum.name << " {\n";
-    for (const auto &Val : Enum.values)
-      Header << "\t" << Enum.name << "_" << Val.name << " = " << Val.value
-             << ",\n";
-    Header << "} " << Enum.name << ";\n";
-  } else {
-    Header << "typedef " << Enum.underlyingType << " " << Enum.name << ";\n";
-    for (const auto &Val : Enum.values)
-      Header << "#define " << Enum.name << "_" << Val.name << " " << Val.value
-             << "\n";
   }
+  else {
+    // We should emit a small warning that we need C23
+    Header << "typedef enum " << Enum.name << " : " << Enum.underlyingType << " {\n";
+  }
+  for (const auto &Val : Enum.values)
+    Header << "\t" << Enum.name << "_" << Val.name << " = " << Val.value
+           << ",\n";
+  Header << "} " << Enum.name << ";\n";
   Header << "\n";
 }
 
